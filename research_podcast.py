@@ -1,0 +1,661 @@
+"""Research-to-podcast orchestrator for PROJECT GAKU.
+
+Chains:
+  1. gaku.py             -> scraped sources for a topic (results.md)
+  2. synthesize_research_to_script (MCP, Gemini)  -> validated episode JSON
+  3. generate_audio (MCP, Kokoro TTS)              -> per-line WAVs
+  4. concatenate_audio_track (MCP, ffmpeg)         -> single podcast WAV
+
+Reuses the same MCPClient and PYTHONIOENCODING fixes as audiobook.py.
+
+Usage:
+  python research_podcast.py --topic "Quantum Computing" --out output/podcasts
+  python research_podcast.py --research-md results.md --topic "Quantum Computing"
+
+# YouTube upload: place youtube_client_secrets.json in this directory.
+# On first run it will open a browser for OAuth approval.
+# Videos upload as private — review before publishing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+# Kokoro voice pool grouped by gender. Used by _pick_voices() when the user
+# doesn't pin --voice-a / --voice-b. Names match kokoro-fastapi's voice ids.
+MALE_VOICES = ["bm_george", "bm_lewis", "am_michael", "am_adam"]
+FEMALE_VOICES = ["bf_emma", "bf_v0isabella", "af_bella", "af_sarah"]
+# Probability that a random pairing is mixed-gender (male + female) vs.
+# same-gender. Mixed sounds more like a typical co-hosted podcast.
+MIXED_GENDER_PROBABILITY = 0.75
+
+
+def _pick_voices(rng: random.Random | None = None) -> tuple[str, str]:
+    """Pick two distinct Kokoro voices for Host A / Host B.
+
+    75% of the time the pair is mixed-gender (one male + one female); the
+    remaining 25% is same-gender for variety. Never returns the same voice
+    twice. Pass `rng` to make selection deterministic in tests.
+    """
+    r = rng or random
+    if r.random() < MIXED_GENDER_PROBABILITY:
+        male = r.choice(MALE_VOICES)
+        female = r.choice(FEMALE_VOICES)
+        # Randomize who's primary so we don't always lead with the male voice.
+        return (male, female) if r.random() < 0.5 else (female, male)
+    pool = MALE_VOICES if r.random() < 0.5 else FEMALE_VOICES
+    a, b = r.sample(pool, 2)
+    return a, b
+
+# Reuse the MCPClient from audiobook.py to avoid duplication and inherit the
+# UTF-8 stdio fix.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from audiobook import MCPClient, MCP_SERVER_CMD  # noqa: E402
+
+ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+GAKU_SCRIPT = REPO_ROOT / "gaku.py"
+DEFAULT_RESULTS = REPO_ROOT / "results.md"
+
+# Google Drive File Stream sync target. Folder name has TWO spaces between
+# "PROJECT" and "学" — a single-space path will silently miss the folder.
+DRIVE_SYNC_DIR = Path(r"D:\My Drive\PROJECT  学")
+
+
+def slugify_title(title: str, max_len: int = 60) -> str:
+    """Filesystem-safe slug. Strips weird chars, collapses runs of separators,
+    truncates to max_len. Falls back to 'podcast' for empty input."""
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", title or "").strip("._-")
+    if len(s) > max_len:
+        s = s[:max_len].rstrip("._-")
+    return s or "podcast"
+
+
+def make_run_dir(out_parent: Path, topic: str) -> Path:
+    """Build a unique per-run directory: <parent>/<dd.mm.yy>_<slug>/.
+    If a same-day run with the same topic already exists, append _2, _3, ..."""
+    date_str = datetime.now().strftime("%d.%m.%y")
+    slug = slugify_title(topic)
+    base = out_parent / f"{date_str}_{slug}"
+    if not base.exists():
+        return base
+    n = 2
+    while True:
+        candidate = out_parent / f"{date_str}_{slug}_{n}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def run_gaku(topic: str) -> Path:
+    """Spawn gaku.py for the topic; return the path to results.md it produced."""
+    print(f"[podcast] running gaku.py for topic: {topic!r}", file=sys.stderr)
+    proc = subprocess.run(
+        [sys.executable, str(GAKU_SCRIPT), "--topic", topic],
+        cwd=str(REPO_ROOT),
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr or proc.stdout or "")
+        raise SystemExit(f"gaku.py failed (exit {proc.returncode})")
+    if not DEFAULT_RESULTS.exists():
+        raise SystemExit("gaku.py finished but results.md was not produced")
+    return DEFAULT_RESULTS
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Topic -> scraped sources -> Gemini script -> narrated podcast audio."
+    )
+    parser.add_argument("--topic", required=True, help="Podcast topic (used by gaku.py and as the Gemini TOPIC field)")
+    parser.add_argument(
+        "--research-md",
+        default=None,
+        help="Pre-existing markdown research notes. If omitted, gaku.py is run for --topic.",
+    )
+    parser.add_argument(
+        "--episode-in",
+        default=None,
+        help="Path to an existing episode.json. Skips research + Gemini synthesis and "
+             "writes the run into the same parent dir as the episode.json file. Audio is still "
+             "regenerated (Kokoro is local + fast). Use to re-render video without paying for Gemini.",
+    )
+    parser.add_argument("--out", default="output/podcasts", help="Output directory")
+    parser.add_argument(
+        "--duration",
+        type=int,
+        default=8,
+        help="Target podcast duration in minutes (default: 8)",
+    )
+    parser.add_argument(
+        "--voice-a",
+        default=None,
+        help="Kokoro voice for Host A. If omitted, a random voice is picked per run.",
+    )
+    parser.add_argument(
+        "--voice-b",
+        default=None,
+        help="Kokoro voice for Host B. If omitted, a random voice is picked per run "
+             "(mixed-gender with --voice-a 75%% of the time).",
+    )
+    parser.add_argument(
+        "--tone",
+        default="Conversational",
+        help="Conversational | Educational | Storytelling | Technical | Inspirational",
+    )
+    parser.add_argument(
+        "--audience-level",
+        default="Intermediate",
+        help="Beginner | Intermediate | Advanced | Expert",
+    )
+    parser.add_argument(
+        "--focus",
+        default="",
+        help="Free-form focus directive appended to the Gemini prompt.",
+    )
+    parser.add_argument(
+        "--episode-out",
+        default=None,
+        help="Optional path to also write the raw episode JSON (for debugging / re-runs)",
+    )
+    parser.add_argument(
+        "--keep-intermediates",
+        action="store_true",
+        help="Keep the per-line WAV fragments in <out>/audio after the final podcast WAV is written. By default they are deleted to avoid clutter.",
+    )
+    parser.add_argument(
+        "--mp3-bitrate",
+        default="64k",
+        help="MP3 bitrate for the compressed final (default: 64k — audiobook sweet spot for spoken word).",
+    )
+    parser.add_argument(
+        "--keep-wav",
+        action="store_true",
+        help="Keep the uncompressed podcast.wav alongside podcast.mp3. By default the WAV is deleted after MP3 conversion to save disk space (~5× smaller).",
+    )
+    parser.add_argument(
+        "--video",
+        action="store_true",
+        help="Also produce podcast.mp4 with scripted visuals overlaid on a looped background. Adds ~1-2 min per visual to total runtime. Off by default — audio-only is the fast path.",
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Skip YouTube upload even if credentials are present",
+    )
+    args = parser.parse_args()
+
+    # Resolve voices. If either side wasn't pinned on the CLI, pick a random
+    # pair (mixed-gender 75% of the time). If only one side was pinned, fill
+    # the other with a different random voice so we never collide.
+    if args.voice_a is None and args.voice_b is None:
+        args.voice_a, args.voice_b = _pick_voices()
+    elif args.voice_a is None:
+        pool = [v for v in (MALE_VOICES + FEMALE_VOICES) if v != args.voice_b]
+        args.voice_a = random.choice(pool)
+    elif args.voice_b is None:
+        pool = [v for v in (MALE_VOICES + FEMALE_VOICES) if v != args.voice_a]
+        args.voice_b = random.choice(pool)
+    print(f"[voices] Primary: {args.voice_a} | Secondary: {args.voice_b}", file=sys.stderr)
+
+    # --episode-in skips research + Gemini. The run dir is the parent of the
+    # given episode.json (we re-use that folder, including its existing audio
+    # if --reuse-audio works out). research_notes stays empty.
+    if args.episode_in:
+        episode_in_path = Path(args.episode_in).resolve()
+        if not episode_in_path.exists():
+            print(f"--episode-in file not found: {episode_in_path}", file=sys.stderr)
+            return 2
+        out_dir = episode_in_path.parent
+        audio_dir = out_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[podcast] run directory (from --episode-in): {out_dir}", file=sys.stderr)
+        research_notes = ""
+        research_path = None
+    else:
+        research_path = Path(args.research_md).resolve() if args.research_md else run_gaku(args.topic)
+        if not research_path.exists():
+            print(f"Research notes not found: {research_path}", file=sys.stderr)
+            return 2
+
+        research_notes = research_path.read_text(encoding="utf-8")
+        if not research_notes.strip():
+            print("Research notes are empty — nothing for Gemini to synthesize.", file=sys.stderr)
+            return 2
+
+        # Per-run subfolder: <parent>/<dd.mm.yyyy>_<safe-title>/.
+        # Each run is self-contained so previous runs aren't clobbered.
+        out_parent = Path(args.out).resolve()
+        out_dir = make_run_dir(out_parent, args.topic)
+        audio_dir = out_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[podcast] run directory: {out_dir}", file=sys.stderr)
+
+        # Preserve the research notes that fed this run, so each run folder is
+        # self-describing without depending on the repo-root results.md (which
+        # gets overwritten by the next gaku.py invocation).
+        try:
+            shutil.copyfile(research_path, out_dir / "results.md")
+        except OSError as exc:
+            print(f"[podcast] warning: failed to copy results.md: {exc}", file=sys.stderr)
+
+    print(f"[podcast] spawning MCP server: {' '.join(MCP_SERVER_CMD)}", file=sys.stderr)
+    client = MCPClient(MCP_SERVER_CMD)
+
+    try:
+        if args.episode_in:
+            episode = json.loads(Path(args.episode_in).read_text(encoding="utf-8"))
+            print(f"[podcast] loaded episode from {args.episode_in}", file=sys.stderr)
+        else:
+            print("[podcast] synthesizing script with Gemini…", file=sys.stderr)
+            resp = client.call("synthesize_research_to_script", {
+                "topic": args.topic,
+                "research_notes": research_notes,
+                "target_duration_minutes": args.duration,
+                "voice_a": args.voice_a,
+                "voice_b": args.voice_b,
+                "tone": args.tone,
+                "audience_level": args.audience_level,
+                "focus": args.focus,
+            })
+            if not isinstance(resp, dict):
+                print(f"Unexpected synthesizer response shape: {type(resp).__name__}", file=sys.stderr)
+                return 3
+            if resp.get("gemini_failed"):
+                print(f"[podcast] Gemini synthesis failed: {resp.get('warning')}", file=sys.stderr)
+                return 3
+            episode = resp.get("episode")
+            if not episode:
+                print("[podcast] Gemini returned no episode object.", file=sys.stderr)
+                print(f"  raw response prefix: {(resp.get('raw_response') or '')[:200]!r}", file=sys.stderr)
+                return 3
+
+            # Always save the Gemini-generated episode script into the run folder
+            # so the run is fully reproducible from disk. --episode-out, if set,
+            # additionally writes to a user-specified path.
+            default_episode_path = out_dir / "episode.json"
+            try:
+                default_episode_path.write_text(
+                    json.dumps(episode, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                print(f"[podcast] wrote episode JSON: {default_episode_path}", file=sys.stderr)
+            except OSError as exc:
+                print(f"[podcast] warning: failed to write episode.json: {exc}", file=sys.stderr)
+            if args.episode_out:
+                Path(args.episode_out).write_text(json.dumps(episode, indent=2, ensure_ascii=False), encoding="utf-8")
+                print(f"[podcast] wrote episode JSON: {args.episode_out}", file=sys.stderr)
+
+        # Best-effort validation. A schema failure is loud but non-fatal — we
+        # still try TTS, since a slightly-off episode often plays fine.
+        try:
+            validation = client.call("validate_episode_json", {"episode": episode})
+            if isinstance(validation, dict) and not validation.get("valid", True):
+                errs = validation.get("errors") or []
+                print(f"[podcast] WARNING: episode JSON failed schema validation: {errs}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[podcast] validator threw {exc!r} — continuing anyway", file=sys.stderr)
+
+        segments = episode.get("segments") or []
+        line_count = sum(len(s.get("lines") or []) for s in segments)
+        print(f"[podcast] episode has {len(segments)} segments, {line_count} lines", file=sys.stderr)
+
+        print("[podcast] synthesizing per-line audio via Kokoro…", file=sys.stderr)
+        audio_resp = client.call("generate_audio", {
+            "episode": episode,
+            "out_dir": str(audio_dir),
+        })
+        if not isinstance(audio_resp, dict) or not audio_resp.get("clips"):
+            print("[podcast] generate_audio returned no clips", file=sys.stderr)
+            return 4
+        clips = audio_resp["clips"]
+        print(f"[podcast] {len(clips)} clips synthesized", file=sys.stderr)
+
+        # Drop any zero-path clips (shouldn't happen here, but be defensive).
+        clips = [c for c in clips if c.get("path")]
+
+        final_wav = out_dir / "podcast.wav"
+        print(f"[podcast] concatenating to {final_wav}…", file=sys.stderr)
+        client.call("concatenate_audio_track", {
+            "clips": clips,
+            "out_path": str(final_wav),
+        })
+
+        # Drop the per-line WAV fragments once the final podcast WAV exists.
+        if not args.keep_intermediates and audio_dir.exists():
+            shutil.rmtree(audio_dir, ignore_errors=True)
+            print(f"[podcast] cleaned up intermediates in {audio_dir}", file=sys.stderr)
+
+        # --------- OPTIONAL VIDEO ASSEMBLY (Tier 2) ----------
+        # Off by default. When --video is passed:
+        #   1. Render PodcastBackground (looped base layer)
+        #   2. compute_visual_timings → absolute start/end per visual
+        #   3. Render each scripted visual via render_visual
+        #   4. compose_final_video → podcast.mp4
+        # Video is composed against the WAV so we don't inherit the 25 ms
+        # MP3 priming delay; MP3 conversion is the very last step below.
+        final_video_path = None
+        if args.video:
+            try:
+                final_video_path = _build_video(
+                    client=client,
+                    episode=episode,
+                    clips=clips,
+                    audio_for_video=final_wav,
+                    out_dir=out_dir,
+                    topic=args.topic,
+                )
+            except Exception as exc:
+                print(f"[podcast] WARNING: video assembly failed: {exc}", file=sys.stderr)
+                # Audio still ships even if video failed.
+
+        # Final step (both audio-only and video paths): compress WAV → MP3.
+        # A typical 8-minute podcast at 64k mono is ~3.8 MB vs ~23 MB as WAV.
+        final_mp3 = out_dir / "podcast.mp3"
+        print(f"[podcast] compressing to {final_mp3} ({args.mp3_bitrate} mp3)…", file=sys.stderr)
+        mp3_ok = False
+        try:
+            mp3_proc = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-i", str(final_wav),
+                    "-c:a", "libmp3lame",
+                    "-b:a", args.mp3_bitrate,
+                    "-ac", "1",
+                    str(final_mp3),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if mp3_proc.returncode != 0:
+                print(
+                    f"[podcast] WARNING: mp3 transcode failed (exit {mp3_proc.returncode}); "
+                    f"keeping WAV.\n  stderr: {mp3_proc.stderr.strip()[-500:]}",
+                    file=sys.stderr,
+                )
+            else:
+                mp3_ok = True
+        except FileNotFoundError:
+            print(
+                "[podcast] WARNING: ffmpeg not found on PATH; skipping mp3 compression.",
+                file=sys.stderr,
+            )
+
+        if mp3_ok:
+            wav_size_mb = final_wav.stat().st_size / (1024 * 1024) if final_wav.exists() else 0
+            mp3_size_mb = final_mp3.stat().st_size / (1024 * 1024)
+            print(
+                f"[podcast] mp3 ready: {mp3_size_mb:.1f} MB "
+                f"(was {wav_size_mb:.1f} MB as wav, {mp3_size_mb / max(wav_size_mb, 0.01) * 100:.0f}% of original)",
+                file=sys.stderr,
+            )
+            # Delete the WAV by default to honor the "compress" intent.
+            if not args.keep_wav and final_wav.exists():
+                try:
+                    final_wav.unlink()
+                    print("[podcast] removed uncompressed WAV (pass --keep-wav to keep it)", file=sys.stderr)
+                except OSError as exc:
+                    print(f"[podcast] WARNING: could not delete WAV: {exc}", file=sys.stderr)
+
+        # --- YouTube upload ---
+        if final_video_path and final_video_path.exists() and not args.no_upload:
+            _try_youtube_upload(out_dir, episode, final_video_path)
+
+        final_audio_path = final_mp3 if mp3_ok else final_wav
+
+        # --- Drive sync ---
+        # Share exactly one artifact per run: the mp4 when video was produced,
+        # otherwise the mp3. The Drive folder is the single source of truth for
+        # finished episodes, so we don't want duplicate audio + video copies.
+        drive_src = final_video_path if final_video_path and final_video_path.exists() else (
+            final_mp3 if mp3_ok and final_mp3.exists() else None
+        )
+        if drive_src is not None:
+            _copy_to_drive(drive_src, out_dir.name)
+
+        if final_video_path:
+            print(f"\n[podcast] DONE: video={final_video_path}  audio={final_audio_path}")
+        else:
+            print(f"\n[podcast] DONE: {final_audio_path}")
+        return 0
+    finally:
+        client.close()
+
+
+def _copy_to_drive(src: Path, run_name: str) -> None:
+    """Copy a single finished artifact (mp4 or mp3) into the Drive sync folder
+    under the run-dir name so it sorts alongside prior episodes. Best-effort:
+    a missing Drive mount or copy failure is logged but not fatal."""
+    if not DRIVE_SYNC_DIR.exists():
+        print(f"[podcast] Drive sync folder not found: {DRIVE_SYNC_DIR} — skipping", file=sys.stderr)
+        return
+    dest = DRIVE_SYNC_DIR / f"{run_name}{src.suffix}"
+    try:
+        shutil.copyfile(src, dest)
+        print(f"[podcast] copied to Drive: {dest}", file=sys.stderr)
+    except OSError as exc:
+        print(f"[podcast] WARNING: Drive copy failed ({src.name} -> {dest}): {exc}", file=sys.stderr)
+
+
+def _build_video(
+    client: "MCPClient",
+    episode: dict[str, Any],
+    clips: list[dict[str, Any]],
+    audio_for_video: Path,
+    out_dir: Path,
+    topic: str,
+) -> Path | None:
+    """Segment Blocks: one full-screen visual per segment, plus open/close
+    title cards. Timing comes from clip_durations.json (measured), not from
+    Gemini guesses. SpeakerCard is baked into each SegmentCard, not a
+    separate overlay layer."""
+    print("[podcast] building video track (Segment Blocks)…", file=sys.stderr)
+
+    visuals_dir = out_dir / "visuals"
+    visuals_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Load probed clip durations (written by concatenate_audio_track).
+    clip_durations_path = out_dir / "clip_durations.json"
+    if clip_durations_path.exists():
+        clip_durations = json.loads(clip_durations_path.read_text(encoding="utf-8"))
+    else:
+        # Fallback: derive from the clips array.
+        clip_durations = {
+            "clips": [
+                {"line_id": c.get("line_id"), "duration_ms": int(c.get("duration_ms", 0))}
+                for c in clips
+            ]
+        }
+
+    # 2. Build the visual manifest. This produces one visual per segment +
+    #    open/close title cards, with absolute timings.
+    from visual_queue import build_visual_manifest  # local import
+
+    pexels_key = _load_env_pexels_key()
+    manifest = build_visual_manifest(
+        episode=episode,
+        clip_durations=clip_durations,
+        run_dir=out_dir,
+        pexels_key=pexels_key,
+        audio_path=audio_for_video,
+        mcp_client=client,
+    )
+    visuals_in_manifest = list(manifest.get("visuals") or [])
+    print(
+        f"[podcast] manifest: {len(visuals_in_manifest)} visuals "
+        f"(total {manifest.get('total_duration_ms', 0) / 1000:.1f}s)",
+        file=sys.stderr,
+    )
+
+    # 3. Render every manifest entry.
+    total = len(visuals_in_manifest)
+    for i, v in enumerate(visuals_in_manifest, 1):
+        visual_id = v.get("visual_id") or f"v{i:03d}"
+        template = v.get("template")
+        if not template:
+            continue
+        v_path = visuals_dir / f"visual_{i:03d}_{visual_id}.mp4"
+        duration_ms = max(1000, int(v.get("end_ms", 0)) - int(v.get("start_ms", 0)))
+        print(
+            f"[podcast]   visual {i}/{total}: {template} "
+            f"@ {v.get('start_ms', 0) / 1000:.1f}s for {duration_ms / 1000:.1f}s",
+            file=sys.stderr,
+        )
+        try:
+            client.call("render_visual", {
+                "template": template,
+                "data": v.get("data") or {},
+                "duration_ms": duration_ms,
+                "out_path": str(v_path),
+            })
+        except Exception as exc:
+            print(f"[podcast]   FAILED to render visual {visual_id}: {exc}", file=sys.stderr)
+            continue
+        v["path"] = str(v_path)
+
+    # Persist the manifest with rendered paths so compose_final_video can
+    # pick them up via visual_manifest_path if the caller prefers.
+    (out_dir / "visual_manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    # 4. Compose: concat visuals + audio.
+    rendered = [
+        {
+            "visual_id": v.get("visual_id"),
+            "template": v.get("template"),
+            "path": v["path"],
+            "start_ms": int(v.get("start_ms", 0)),
+            "end_ms": int(v.get("end_ms", 0)),
+        }
+        for v in visuals_in_manifest
+        if v.get("path")
+    ]
+    final_mp4 = out_dir / "podcast.mp4"
+    print(f"[podcast] composing final video → {final_mp4}…", file=sys.stderr)
+    client.call("compose_final_video", {
+        "audio_path": str(audio_for_video),
+        "visuals": rendered,
+        "out_path": str(final_mp4),
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+    })
+
+    size_mb = final_mp4.stat().st_size / (1024 * 1024) if final_mp4.exists() else 0
+    print(f"[podcast] video ready: {size_mb:.1f} MB ({final_mp4})", file=sys.stderr)
+    return final_mp4
+
+
+def _load_env_pexels_key() -> str | None:
+    """Read PEXELS_API_KEY from podcast-pipeline/.env or process env.
+
+    Minimal parser — handles `KEY=value` lines, ignores blanks/comments,
+    strips surrounding quotes. Doesn't pull in python-dotenv just for one
+    key.
+    """
+    existing = os.environ.get("PEXELS_API_KEY")
+    if existing:
+        return existing.strip() or None
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return None
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() != "PEXELS_API_KEY":
+                continue
+            v = v.strip().strip('"').strip("'")
+            return v or None
+    except OSError:
+        return None
+    return None
+
+
+def _voice_display_names(episode: dict[str, Any]) -> dict[str, str]:
+    """Map host_id -> display name pulled from the resolved Kokoro voice_id.
+
+    `bm_george` -> "George", `bf_emma` -> "Emma", `af_bella` -> "Bella", etc.
+    Falls back to the episode's host.name field.
+    """
+    out: dict[str, str] = {}
+    for h in episode.get("hosts") or []:
+        hid = h.get("id")
+        if not hid:
+            continue
+        voice = (h.get("voice_id") or "").strip()
+        # voice ids look like `bm_george` / `af_bella` — strip the prefix.
+        name_part = voice.split("_", 1)[1] if "_" in voice else voice
+        display = name_part.replace("v0", "").strip()
+        out[hid] = display.title() if display else (h.get("name") or f"Host {hid}")
+    return out
+
+
+def _try_youtube_upload(run_dir: Path, episode: dict[str, Any], mp4_path: Path) -> None:
+    """Upload the rendered podcast.mp4 to YouTube as a private video. Skips
+    gracefully if credentials aren't present; logs and swallows errors so a
+    failed upload never breaks the pipeline (the MP4 is still on disk)."""
+    client_secrets = REPO_ROOT / "youtube_client_secrets.json"
+    if not client_secrets.exists():
+        print("[youtube] skipping upload — youtube_client_secrets.json not found")
+        print("[youtube] to enable: place OAuth client secrets file in project root")
+        return
+    # youtube_upload.py lives in the repo root; its module-level relative paths
+    # for the secrets/token files assume the CWD is the repo root, so cd there
+    # for the duration of the upload.
+    import os
+    prev_cwd = os.getcwd()
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    try:
+        os.chdir(REPO_ROOT)
+        import youtube_upload as yt
+        import datetime
+        topic = episode.get("topic", "GAKU Podcast")
+        segments = len(episode.get("segments", []))
+        description = (
+            f"{topic}\n\n"
+            f"Generated by GAKU · {segments} segments · "
+            f"{datetime.date.today().strftime('%B %d, %Y')}\n\n"
+            f"This video was auto-generated using AI research, scripting, and text-to-speech synthesis."
+        )
+        tags = episode.get("keywords", []) or ["podcast", "education", "ai"]
+        result = yt.upload_video(str(mp4_path), title=topic, description=description, tags=tags)
+        out = {**result, "uploaded_at": datetime.datetime.utcnow().isoformat()}
+        (run_dir / "youtube.json").write_text(json.dumps(out, indent=2))
+    except Exception as e:
+        print(f"[youtube] upload failed: {e}")
+        print(f"[youtube] video is still saved locally at: {mp4_path}")
+    finally:
+        os.chdir(prev_cwd)
+
+
+if __name__ == "__main__":
+    # os._exit() bypasses interpreter cleanup so any lingering non-daemon
+    # threads or live refs to OS handles (Kokoro keep-alive sockets, ffmpeg
+    # progress pipes, the Remotion CLI's child handles routed through the
+    # MCP server) can't keep the process alive after we're logically done.
+    # main()'s finally already shut down the MCP child tree via
+    # MCPClient.close(); this is the belt-and-braces guard.
+    _rc = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_rc)

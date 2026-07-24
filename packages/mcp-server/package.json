@@ -1,0 +1,28 @@
+{
+  "name": "@gaku/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing the PROJECT GAKU podcast pipeline tools (validate, audio gen, video compose).",
+  "type": "module",
+  "bin": {
+    "gaku-mcp": "dist/server.js"
+  },
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

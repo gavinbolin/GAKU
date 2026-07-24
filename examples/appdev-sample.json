@@ -1,0 +1,256 @@
+{
+  "episode_id": "appdev-ai-apis-001",
+  "topic": "Building with AI APIs in 2025 — what actually works",
+  "target_duration_minutes": 5,
+  "hosts": [
+    { "id": "A", "name": "Alex", "voice_id": "af_bella" },
+    { "id": "B", "name": "Sam",  "voice_id": "am_michael" }
+  ],
+  "segments": [
+    {
+      "segment_id": "s01_hook",
+      "title": "Cold open",
+      "lines": [
+        {
+          "line_id": "s01_l01",
+          "host_id": "A",
+          "text": "I want to start with something that hit me last week. A solo dev shipped a fully functional app in a weekend — product, backend, UI — using nothing but AI APIs and about four hundred lines of glue code.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s01_l02",
+          "host_id": "B",
+          "text": "And that number is going to keep dropping. Two years ago that project would have taken a team of five, six weeks minimum.",
+          "pause_after_ms": 250
+        },
+        {
+          "line_id": "s01_l03",
+          "host_id": "A",
+          "text": "So today we're going deep on what AI APIs actually deliver in 2025 — which ones are worth building on, where they still fall apart, and what that means for how you architect an app from day one.",
+          "pause_after_ms": 400
+        }
+      ],
+      "visuals": [
+        {
+          "visual_id": "s01_v01",
+          "template": "TitleCard",
+          "start_with_line": "s01_l01",
+          "duration_ms": 4800,
+          "data": {
+            "title": "Building with AI APIs in 2025",
+            "subtitle": "What actually works"
+          }
+        }
+      ]
+    },
+    {
+      "segment_id": "s02_landscape",
+      "title": "The current landscape",
+      "lines": [
+        {
+          "line_id": "s02_l01",
+          "host_id": "B",
+          "text": "Let's orient people. When we say AI APIs, we're talking about three main categories right now. Language models for text and reasoning. Multimodal models that handle images, audio, and video. And specialized models — embeddings, speech, image gen.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s02_l02",
+          "host_id": "A",
+          "text": "And each category has matured at a completely different pace.",
+          "pause_after_ms": 200
+        },
+        {
+          "line_id": "s02_l03",
+          "host_id": "B",
+          "text": "Language models are basically a solved commodity now. GPT-4 class reasoning is available from five or six providers, prices have dropped ninety percent in eighteen months, and latency is fast enough to put in a UI loop. That's a huge shift from even a year ago.",
+          "pause_after_ms": 350
+        },
+        {
+          "line_id": "s02_l04",
+          "host_id": "A",
+          "text": "Ninety percent. That's the number I keep coming back to when people ask if the economics make sense.",
+          "pause_after_ms": 250
+        }
+      ],
+      "visuals": [
+        {
+          "visual_id": "s02_v01",
+          "template": "StatCallout",
+          "start_with_line": "s02_l03",
+          "duration_ms": 4000,
+          "data": {
+            "value": 90,
+            "unit": "%",
+            "caption": "Drop in LLM API pricing over 18 months (2023–2025)."
+          }
+        }
+      ]
+    },
+    {
+      "segment_id": "s03_what_works",
+      "title": "What actually works",
+      "lines": [
+        {
+          "line_id": "s03_l01",
+          "host_id": "B",
+          "text": "So what are the use cases where AI APIs genuinely earn their keep in a production app right now?",
+          "pause_after_ms": 200
+        },
+        {
+          "line_id": "s03_l02",
+          "host_id": "A",
+          "text": "Three categories I keep seeing ship successfully. First: structured extraction — take a blob of unstructured text, get clean JSON back. Receipts, emails, medical notes, legal docs. The models are now reliable enough you can build a real product on that.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s03_l03",
+          "host_id": "B",
+          "text": "Second is semantic search. Swap your SQL LIKE query for an embeddings lookup and suddenly your users can find things by meaning, not exact keywords. That used to be a research project. Now it's like an afternoon of work.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s03_l04",
+          "host_id": "A",
+          "text": "Third — and this is the one most teams underestimate — is using LLMs as a classification layer. Instead of writing a hundred regex rules, you describe your categories in plain English and the model does the routing. It handles edge cases your rules never anticipated.",
+          "pause_after_ms": 350
+        },
+        {
+          "line_id": "s03_l05",
+          "host_id": "B",
+          "text": "That last one has basically killed a whole class of brittle rules engines in production systems.",
+          "pause_after_ms": 250
+        }
+      ],
+      "visuals": [
+        {
+          "visual_id": "s03_v01",
+          "template": "ChapterCard",
+          "start_with_line": "s03_l01",
+          "duration_ms": 3500,
+          "data": {
+            "chapter_number": 1,
+            "title": "What Ships",
+            "subtitle": "Extraction · Search · Classification"
+          }
+        }
+      ]
+    },
+    {
+      "segment_id": "s04_pitfalls",
+      "title": "Where it still falls apart",
+      "lines": [
+        {
+          "line_id": "s04_l01",
+          "host_id": "A",
+          "text": "But there are still places where teams get burned badly. What do you see failing most often?",
+          "pause_after_ms": 200
+        },
+        {
+          "line_id": "s04_l02",
+          "host_id": "B",
+          "text": "Latency assumptions. Developers build something that feels fast in a demo, because they're on a fast machine, good network, and they're the only user. They ship it and the p99 latency is four seconds because the API is under load and they're making three chained calls.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s04_l03",
+          "host_id": "A",
+          "text": "Chaining is the killer. Every call you add multiplies your worst-case latency.",
+          "pause_after_ms": 200
+        },
+        {
+          "line_id": "s04_l04",
+          "host_id": "B",
+          "text": "And cost is still a trap in 2025, even with prices down. I see teams that didn't instrument their API usage, and they discover in month two that one edge case is making ten calls per user session instead of one. At scale that's a budget crisis.",
+          "pause_after_ms": 350
+        }
+      ],
+      "visuals": [
+        {
+          "visual_id": "s04_v01",
+          "template": "ChapterCard",
+          "start_with_line": "s04_l01",
+          "duration_ms": 3500,
+          "data": {
+            "chapter_number": 2,
+            "title": "What Still Breaks",
+            "subtitle": "Latency · Cost drift · Chained calls"
+          }
+        }
+      ]
+    },
+    {
+      "segment_id": "s05_architecture",
+      "title": "Architecture advice",
+      "lines": [
+        {
+          "line_id": "s05_l01",
+          "host_id": "A",
+          "text": "So if you're starting a new app tomorrow that's going to lean heavily on AI APIs, what are the non-negotiables architecturally?",
+          "pause_after_ms": 200
+        },
+        {
+          "line_id": "s05_l02",
+          "host_id": "B",
+          "text": "Route everything through your own backend, not directly from the client. Keeps your API keys off devices, lets you add caching, rate limiting, and logging in one place. You will need all three.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s05_l03",
+          "host_id": "A",
+          "text": "Cache aggressively. Semantically similar requests often produce identical outputs. A simple hash on the input can cut your API costs thirty to fifty percent on most apps.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s05_l04",
+          "host_id": "B",
+          "text": "And design for model swaps from day one. Abstract the provider behind an interface. The model you ship with today will not be the best model in twelve months, and switching should be a config change, not a refactor.",
+          "pause_after_ms": 350
+        },
+        {
+          "line_id": "s05_l05",
+          "host_id": "A",
+          "text": "That last one is so underrated. The projects that get locked into one provider are already paying a tax by the time they realize it.",
+          "pause_after_ms": 250
+        }
+      ],
+      "visuals": [
+        {
+          "visual_id": "s05_v01",
+          "template": "StatCallout",
+          "start_with_line": "s05_l03",
+          "duration_ms": 4000,
+          "data": {
+            "value": 40,
+            "unit": "%",
+            "caption": "Typical API cost reduction from semantic response caching."
+          }
+        }
+      ]
+    },
+    {
+      "segment_id": "s06_close",
+      "title": "Close",
+      "lines": [
+        {
+          "line_id": "s06_l01",
+          "host_id": "B",
+          "text": "Alright. Quick recap: language models are cheap and fast enough to build real products on. The wins are in extraction, semantic search, and classification. The failure modes are chained latency, surprise cost spikes, and vendor lock-in.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s06_l02",
+          "host_id": "A",
+          "text": "Backend proxy, cache hard, and abstract your model provider. Those three things will save you a lot of pain.",
+          "pause_after_ms": 250
+        },
+        {
+          "line_id": "s06_l03",
+          "host_id": "B",
+          "text": "That's a wrap. If you're building something with AI APIs right now, we'd love to hear what's working and what's biting you. Find us in the show notes.",
+          "pause_after_ms": 400
+        }
+      ],
+      "visuals": []
+    }
+  ]
+}

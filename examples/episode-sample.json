@@ -1,0 +1,128 @@
+{
+  "episode_id": "fermentation-001",
+  "topic": "The Science of Fermentation",
+  "target_duration_minutes": 8,
+  "hosts": [
+    { "id": "A", "name": "Alex", "voice_id": "af_bella" },
+    { "id": "B", "name": "Sam",  "voice_id": "am_michael" }
+  ],
+  "segments": [
+    {
+      "segment_id": "s01_hook",
+      "title": "Cold open",
+      "lines": [
+        {
+          "line_id": "s01_l01",
+          "host_id": "A",
+          "text": "Okay, so I want to start with a number that genuinely surprised me. Humans have been deliberately fermenting food for at least nine thousand years.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s01_l02",
+          "host_id": "B",
+          "text": "Nine thousand. That predates written language, agriculture in some regions, basically everything we think of as civilization.",
+          "pause_after_ms": 250
+        },
+        {
+          "line_id": "s01_l03",
+          "host_id": "A",
+          "text": "Which is wild, because fermentation is, scientifically, kind of weird. We're inviting microbes to eat our food before we do.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s01_l04",
+          "host_id": "B",
+          "text": "And somehow that makes it better. Today we're getting into why that works, what's actually happening at the cellular level, and why it might be one of the most important technologies humans ever stumbled onto.",
+          "pause_after_ms": 400
+        }
+      ],
+      "visuals": [
+        {
+          "visual_id": "s01_v01",
+          "template": "TitleCard",
+          "start_after_line": "s01_l01",
+          "duration_ms": 4500,
+          "data": {
+            "title": "The Science of Fermentation",
+            "subtitle": "PROJECT GAKU"
+          }
+        },
+        {
+          "visual_id": "s01_v02",
+          "template": "StatCallout",
+          "start_after_line": "s01_l02",
+          "duration_ms": 4000,
+          "data": {
+            "value": 9000,
+            "unit": "years",
+            "caption": "Earliest direct evidence of intentional fermentation, in pottery from northern China."
+          }
+        }
+      ]
+    },
+    {
+      "segment_id": "s02_what_is_it",
+      "title": "What fermentation actually is",
+      "lines": [
+        {
+          "line_id": "s02_l01",
+          "host_id": "A",
+          "text": "So break it down for me. When I eat sourdough or sip kombucha, what's the actual chemistry?",
+          "pause_after_ms": 250
+        },
+        {
+          "line_id": "s02_l02",
+          "host_id": "B",
+          "text": "At the simplest level, fermentation is when a microbe — a yeast or a bacterium — breaks down sugar without using oxygen. Instead of fully burning the sugar, it produces things like alcohol, lactic acid, or carbon dioxide as byproducts.",
+          "pause_after_ms": 300
+        },
+        {
+          "line_id": "s02_l03",
+          "host_id": "A",
+          "text": "And those byproducts are what we taste.",
+          "pause_after_ms": 200
+        },
+        {
+          "line_id": "s02_l04",
+          "host_id": "B",
+          "text": "Exactly. The tang in yogurt is lactic acid. The bubbles in beer are CO2. The sourness in kimchi is the same lactic acid bacteria you'd find in a sourdough starter, just chewing on cabbage instead of flour.",
+          "pause_after_ms": 350
+        },
+        {
+          "line_id": "s02_l05",
+          "host_id": "A",
+          "text": "And once you start, the population just... explodes, right?",
+          "pause_after_ms": 200
+        },
+        {
+          "line_id": "s02_l06",
+          "host_id": "B",
+          "text": "Yeah. A healthy starter can take a single bacterium and turn it into more than a billion within twenty-four hours. That's the engine driving the whole process.",
+          "pause_after_ms": 400
+        }
+      ],
+      "visuals": [
+        {
+          "visual_id": "s02_v01",
+          "template": "GrowthCurve",
+          "start_after_line": "s02_l06",
+          "duration_ms": 5500,
+          "data": {
+            "label": "Lactic acid bacteria population over 24 hours",
+            "points": [
+              { "x": 0,  "y": 1 },
+              { "x": 4,  "y": 16 },
+              { "x": 8,  "y": 256 },
+              { "x": 12, "y": 4096 },
+              { "x": 16, "y": 65536 },
+              { "x": 20, "y": 524288 },
+              { "x": 24, "y": 1048576 }
+            ],
+            "x_axis_label": "Hours",
+            "y_axis_label": "Cells (log scale)"
+          }
+        }
+      ]
+    }
+  ]
+}
