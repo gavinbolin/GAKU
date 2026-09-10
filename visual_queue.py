@@ -16,77 +16,142 @@ from typing import Any
 COLOR_PRIMARY = "#7C3AED"  # legacy default — kept for backward compat
 COLOR_SECONDARY = "#0EA5E9"  # legacy default — kept for backward compat
 
-
-# ---------- Voice registry ----------
-# Each Kokoro voice gets a stable persona name + accent color. The same voice
-# ALWAYS gets the same name and color across runs and across videos, so a
-# returning listener recognizes "the purple one" or "Bella" instantly.
-#
-# Two-layer lookup:
-#   1. Curated table below — exact names + a hand-picked color palette for
-#      voices we expect users to pick most often. Colors are chosen to be
-#      visually distinct in HSL so adjacent host slots never look similar.
-#   2. Fallback: any voice not in the table gets a name derived from the
-#      voice_id (e.g. `bm_george` -> "George") and a color picked
-#      deterministically from a hash of the voice_id so it's still stable.
-VOICE_REGISTRY: dict[str, dict[str, str]] = {
-    "af_bella":       {"name": "Bella",     "color": "#7C3AED"},  # violet
-    "am_michael":     {"name": "Michael",   "color": "#0EA5E9"},  # sky
-    "af_sarah":       {"name": "Sarah",     "color": "#F97316"},  # coral
-    "am_adam":        {"name": "Adam",      "color": "#10B981"},  # teal
-    "bf_emma":        {"name": "Emma",      "color": "#EC4899"},  # pink
-    "bm_george":      {"name": "George",    "color": "#F59E0B"},  # amber
-    "af_nicole":      {"name": "Nicole",    "color": "#6366F1"},  # indigo
-    "am_eric":        {"name": "Eric",      "color": "#F43F5E"},  # rose
-    "bf_alice":       {"name": "Alice",     "color": "#14B8A6"},  # teal-cyan
-    "bm_daniel":      {"name": "Daniel",    "color": "#A855F7"},  # purple
-    # Random-pool voices used by research_podcast._pick_voices
-    "bm_lewis":       {"name": "Lewis",     "color": "#22D3EE"},  # cyan
-    "bf_v0isabella":  {"name": "Isabella",  "color": "#E879F9"},  # fuchsia
-    "bf_isabella":    {"name": "Isabella",  "color": "#E879F9"},
-}
-
-# Used both as the default-host fallback and as the pool a hash-based lookup
-# draws from for any voice not in VOICE_REGISTRY.
-_FALLBACK_COLORS: list[str] = [
+# ---------- Voice color registry (JSON source of truth) ----------
+# Humans edit: PROJECT GAKU/voice_colors.json  (see docs/voice_colors.md)
+# Remotion never keeps its own table — colors arrive as SegmentCard props.
+_VOICE_COLORS_PATH = Path(__file__).resolve().parent.parent / "voice_colors.json"
+_DEFAULT_PALETTE: list[str] = [
     "#7C3AED", "#0EA5E9", "#F97316", "#10B981",
     "#EC4899", "#F59E0B", "#6366F1", "#F43F5E",
-    "#14B8A6", "#A855F7",
+    "#14B8A6", "#A855F7", "#22D3EE", "#E879F9",
+    "#84CC16", "#FB7185", "#38BDF8",
 ]
 
 
-def voice_persona(voice_id: str) -> dict[str, str]:
-    """Resolve a Kokoro voice_id to {name, color}. Stable across runs."""
+def _load_voice_colors() -> dict[str, Any]:
+    """Load voice_colors.json; return a mutable dict with voices + palette_next."""
+    path = _VOICE_COLORS_PATH
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("voices"), dict):
+                data.setdefault("palette_next", list(_DEFAULT_PALETTE))
+                return data
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[visual_queue] warn: could not read {path}: {exc}", file=sys.stderr)
+    return {
+        "version": 1,
+        "voices": {},
+        "palette_next": list(_DEFAULT_PALETTE),
+    }
+
+
+def _save_voice_colors(data: dict[str, Any]) -> None:
+    try:
+        _VOICE_COLORS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _VOICE_COLORS_PATH.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"[visual_queue] warn: could not write {_VOICE_COLORS_PATH}: {exc}", file=sys.stderr)
+
+
+def _derive_display_name(voice_id: str) -> str:
     vid = (voice_id or "").strip()
-    if vid in VOICE_REGISTRY:
-        return dict(VOICE_REGISTRY[vid])
-    # Derive name: `bm_george` -> "George", `af_v0bella` -> "Bella".
+    # VibeVoice refs: Serana_ref.wav -> Serana
+    if vid.lower().endswith(".wav"):
+        stem = Path(vid).stem
+        stem = re.sub(r"[_-]?ref$", "", stem, flags=re.IGNORECASE)
+        stem = stem.replace("_", " ").strip()
+        return stem.title() if stem else "Speaker"
+    # Kokoro: bm_george / bf_v0isabella -> George / Isabella
     name_part = vid.split("_", 1)[1] if "_" in vid else vid
-    name_part = name_part.replace("v0", "").strip() or "Speaker"
-    # Hash-driven color so the same unknown voice always gets the same color.
-    color_idx = sum(ord(c) for c in vid) % len(_FALLBACK_COLORS) if vid else 0
-    return {"name": name_part.title(), "color": _FALLBACK_COLORS[color_idx]}
+    name_part = re.sub(r"^v0", "", name_part, flags=re.IGNORECASE).strip()
+    return name_part.replace("_", " ").title() if name_part else "Speaker"
+
+
+def _pick_unused_color(data: dict[str, Any]) -> str:
+    used = {
+        str(v.get("color") or "").upper()
+        for v in (data.get("voices") or {}).values()
+        if isinstance(v, dict)
+    }
+    palette = list(data.get("palette_next") or []) + list(_DEFAULT_PALETTE)
+    for c in palette:
+        if c.upper() not in used:
+            return c
+    # Exhausted palette — hash a fresh-ish distinct hex from size.
+    n = len(used) + 1
+    return f"#{(n * 47) % 256:02X}{(n * 91) % 256:02X}{(n * 13) % 256:02X}"
+
+
+def voice_persona(voice_id: str, *, persist_unknown: bool = True) -> dict[str, str]:
+    """Resolve a voice_id (Kokoro id or VibeVoice ref filename) to {name, color}.
+
+    Looks up PROJECT GAKU/voice_colors.json. Unknown ids get a derived name +
+    next unused palette color, then are appended to the JSON so the mapping
+    stays stable on the next run.
+    """
+    vid = (voice_id or "").strip()
+    data = _load_voice_colors()
+    voices = data.get("voices") or {}
+    entry = voices.get(vid) if vid else None
+    if isinstance(entry, dict) and entry.get("color"):
+        name = (entry.get("display_name") or entry.get("name") or _derive_display_name(vid)).strip()
+        return {"name": name or _derive_display_name(vid), "color": str(entry["color"])}
+
+    name = _derive_display_name(vid) if vid else "Speaker"
+    color = _pick_unused_color(data)
+    if vid and persist_unknown:
+        voices[vid] = {
+            "display_name": name,
+            "color": color,
+            "notes": "auto-added by visual_queue.voice_persona",
+        }
+        data["voices"] = voices
+        # Drop the color we just consumed from palette_next if present.
+        next_p = [c for c in (data.get("palette_next") or []) if c.upper() != color.upper()]
+        data["palette_next"] = next_p
+        _save_voice_colors(data)
+        print(f"[visual_queue] registered new voice {vid!r} -> {name} {color}", file=sys.stderr)
+    return {"name": name, "color": color}
+
+
+# Lazy snapshot for any legacy rom visual_queue import VOICE_REGISTRY imports.
+def _voice_registry_snapshot() -> dict[str, dict[str, str]]:
+    data = _load_voice_colors()
+    out: dict[str, dict[str, str]] = {}
+    for k, v in (data.get("voices") or {}).items():
+        if isinstance(v, dict) and v.get("color"):
+            out[k] = {
+                "name": str(v.get("display_name") or v.get("name") or _derive_display_name(k)),
+                "color": str(v["color"]),
+            }
+    return out
+
+
+VOICE_REGISTRY = _voice_registry_snapshot()
+_FALLBACK_COLORS = list(_DEFAULT_PALETTE)
 
 
 def _host_personas(episode: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
-    """Return ({name, color}, {name, color}) for hosts A and B by looking up
-    each host's voice_id in the registry. Replaces the old _host_names() +
-    COLOR_PRIMARY/SECONDARY pair so name+color are voice-coordinated."""
-    a = {"name": "Host A", "color": _FALLBACK_COLORS[0]}
-    b = {"name": "Host B", "color": _FALLBACK_COLORS[1]}
+    """Return ({name, color}, {name, color}) for hosts A and B from voice_colors.json."""
+    a = {"name": "Host A", "color": _DEFAULT_PALETTE[0]}
+    b = {"name": "Host B", "color": _DEFAULT_PALETTE[1]}
     for h in episode.get("hosts") or []:
         if h.get("id") == "A":
             a = voice_persona(h.get("voice_id") or "")
         elif h.get("id") == "B":
             b = voice_persona(h.get("voice_id") or "")
-    # Belt-and-braces: if the user somehow picked the same voice for both
-    # hosts, distinguish them in the UI by giving B the next fallback color.
     if a["color"] == b["color"]:
-        for c in _FALLBACK_COLORS:
-            if c != a["color"]:
-                b["color"] = c
+        # Force a distinct B color without mutating the registry entry.
+        for c in _DEFAULT_PALETTE:
+            if c.upper() != a["color"].upper():
+                b = {**b, "color": c}
                 break
     return a, b
+
 
 # Open/close title card duration (ms).
 TITLE_CARD_MS = 5000

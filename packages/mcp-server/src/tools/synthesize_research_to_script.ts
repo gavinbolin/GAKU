@@ -11,8 +11,9 @@
 //     line targets, then one call per segment to write its dialogue. Avoids
 //     the 65k output-token ceiling and produces clean JSON every time.
 
+import { readFileSync, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { GoogleGenerativeAI, type GenerativeModel, type GenerateContentResult } from "@google/generative-ai";
@@ -40,31 +41,49 @@ const DEFAULT_DURATION_MIN = 8;
 const DEFAULT_VOICE_A = "af_bella";
 const DEFAULT_VOICE_B = "am_michael";
 
-/** Stable display name for a Kokoro voice_id (matches visual_queue.VOICE_REGISTRY). */
-const VOICE_DISPLAY_NAMES: Record<string, string> = {
-  af_bella: "Bella",
-  am_michael: "Michael",
-  af_sarah: "Sarah",
-  am_adam: "Adam",
-  bf_emma: "Emma",
-  bm_george: "George",
-  af_nicole: "Nicole",
-  am_eric: "Eric",
-  bf_alice: "Alice",
-  bm_daniel: "Daniel",
-  bm_lewis: "Lewis",
-  bf_v0isabella: "Isabella",
-  bf_isabella: "Isabella",
-};
+/** Display names from PROJECT GAKU/voice_colors.json (single source of truth). */
+const _VOICE_COLORS_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..", "..", "..", "..", "voice_colors.json"
+);
+
+type VoiceColorEntry = { display_name?: string; name?: string; color?: string };
+let _voiceColorsCache: Record<string, VoiceColorEntry> | null = null;
+
+function loadVoiceColors(): Record<string, VoiceColorEntry> {
+  if (_voiceColorsCache) return _voiceColorsCache;
+  try {
+    if (existsSync(_VOICE_COLORS_PATH)) {
+      const raw = JSON.parse(readFileSync(_VOICE_COLORS_PATH, "utf-8"));
+      _voiceColorsCache = (raw?.voices as Record<string, VoiceColorEntry>) || {};
+      return _voiceColorsCache;
+    }
+  } catch {
+    /* fall through to empty */
+  }
+  _voiceColorsCache = {};
+  return _voiceColorsCache;
+}
 
 function voiceDisplayName(voiceId: string): string {
   const vid = (voiceId || "").trim();
-  if (VOICE_DISPLAY_NAMES[vid]) return VOICE_DISPLAY_NAMES[vid];
+  const entry = loadVoiceColors()[vid];
+  if (entry?.display_name) return entry.display_name;
+  if (entry?.name) return entry.name;
+  if (vid.toLowerCase().endsWith(".wav")) {
+    const stem = vid
+      .replace(/\.wav$/i, "")
+      .replace(/[_-]?ref$/i, "")
+      .replace(/[_-]+/g, " ")
+      .trim();
+    return stem ? stem.replace(/\b\w/g, (c) => c.toUpperCase()) : "Host";
+  }
   const part = vid.includes("_") ? vid.split("_").slice(1).join("_") : vid;
   const cleaned = part.replace(/^v0/i, "").replace(/[_-]+/g, " ").trim();
   if (!cleaned) return "Host";
-  return cleaned.replace(/\w/g, (c) => c.toUpperCase());
+  return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
 const DEFAULT_TONE = "Conversational";
 const DEFAULT_AUDIENCE = "Intermediate";
 const DIALOGUE_STYLE_RULES = [
