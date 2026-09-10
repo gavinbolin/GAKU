@@ -30,16 +30,20 @@ COLOR_SECONDARY = "#0EA5E9"  # legacy default — kept for backward compat
 #      voice_id (e.g. `bm_george` -> "George") and a color picked
 #      deterministically from a hash of the voice_id so it's still stable.
 VOICE_REGISTRY: dict[str, dict[str, str]] = {
-    "af_bella":   {"name": "Bella",   "color": "#7C3AED"},  # violet
-    "am_michael": {"name": "Michael", "color": "#0EA5E9"},  # sky
-    "af_sarah":   {"name": "Sarah",   "color": "#F97316"},  # coral
-    "am_adam":    {"name": "Adam",    "color": "#10B981"},  # teal
-    "bf_emma":    {"name": "Emma",    "color": "#EC4899"},  # pink
-    "bm_george":  {"name": "George",  "color": "#F59E0B"},  # amber
-    "af_nicole":  {"name": "Nicole",  "color": "#6366F1"},  # indigo
-    "am_eric":    {"name": "Eric",    "color": "#F43F5E"},  # rose
-    "bf_alice":   {"name": "Alice",   "color": "#14B8A6"},  # teal-cyan
-    "bm_daniel":  {"name": "Daniel",  "color": "#A855F7"},  # purple
+    "af_bella":       {"name": "Bella",     "color": "#7C3AED"},  # violet
+    "am_michael":     {"name": "Michael",   "color": "#0EA5E9"},  # sky
+    "af_sarah":       {"name": "Sarah",     "color": "#F97316"},  # coral
+    "am_adam":        {"name": "Adam",      "color": "#10B981"},  # teal
+    "bf_emma":        {"name": "Emma",      "color": "#EC4899"},  # pink
+    "bm_george":      {"name": "George",    "color": "#F59E0B"},  # amber
+    "af_nicole":      {"name": "Nicole",    "color": "#6366F1"},  # indigo
+    "am_eric":        {"name": "Eric",      "color": "#F43F5E"},  # rose
+    "bf_alice":       {"name": "Alice",     "color": "#14B8A6"},  # teal-cyan
+    "bm_daniel":      {"name": "Daniel",    "color": "#A855F7"},  # purple
+    # Random-pool voices used by research_podcast._pick_voices
+    "bm_lewis":       {"name": "Lewis",     "color": "#22D3EE"},  # cyan
+    "bf_v0isabella":  {"name": "Isabella",  "color": "#E879F9"},  # fuchsia
+    "bf_isabella":    {"name": "Isabella",  "color": "#E879F9"},
 }
 
 # Used both as the default-host fallback and as the pool a hash-based lookup
@@ -266,6 +270,56 @@ def _proportional_word_timings(
     return out
 
 
+def _norm_tok(tok: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (tok or "").lower())
+
+
+def _script_token_stream(
+    episode: dict[str, Any],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Flatten episode lines into expected tokens + per-token metadata.
+
+    Each meta entry: {word (original script token), speaker, segment_idx, line_idx}.
+    """
+    tokens: list[str] = []
+    meta: list[dict[str, Any]] = []
+    for seg_idx, seg in enumerate(episode.get("segments") or []):
+        for line_idx, line in enumerate(seg.get("lines") or []):
+            speaker = line.get("host_id") or "A"
+            text = (line.get("text") or "").strip()
+            for raw in _WORD_RE.findall(text):
+                norm = _norm_tok(raw)
+                if not norm:
+                    continue
+                tokens.append(norm)
+                meta.append({
+                    "word": raw,
+                    "speaker": speaker,
+                    "segment_idx": seg_idx,
+                    "line_idx": line_idx,
+                })
+    return tokens, meta
+
+
+def _stretch_word_ends(words: list[dict[str, Any]], *, max_pad_ms: int = 320) -> None:
+    """Extend each word's end toward the next word's start so karaoke highlight
+    doesn't flicker off mid-phoneme. Caps the pad so long pauses still clear.
+    """
+    for i, w in enumerate(words):
+        start = int(w["start_ms"])
+        end = int(w["end_ms"])
+        if end < start + 40:
+            end = start + 40
+        if i + 1 < len(words):
+            nxt = int(words[i + 1]["start_ms"])
+            if nxt > end:
+                end = min(nxt, end + max_pad_ms)
+                # If the gap is small, fill it entirely so highlight is continuous.
+                if nxt - end <= 80:
+                    end = nxt
+        w["end_ms"] = max(end, start + 1)
+
+
 def _bucket_aligned_words(
     aligned: list[dict[str, Any]],
     bounds: list[dict[str, Any]],
@@ -274,6 +328,9 @@ def _bucket_aligned_words(
     into the per-line buckets defined by `bounds`. Each aligned word lands in
     the bucket whose audio range covers its midpoint; words that fall in a
     `pause_after_ms` gap snap to the nearest neighbouring bucket.
+
+    Prefer `_script_anchored_timings` — this path keeps Whisper's own tokens
+    (which can diverge from the script) and is only a fallback.
     """
     if not aligned or not bounds:
         return []
@@ -312,6 +369,127 @@ def _bucket_aligned_words(
             "segment_idx": b["seg_idx"],
             "line_idx": b["line_idx"],
         })
+    _stretch_word_ends(out)
+    return out
+
+
+def _script_anchored_timings(
+    episode: dict[str, Any],
+    aligned: list[dict[str, Any]],
+    bounds: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Force-align SCRIPT tokens to Whisper word times via difflib.
+
+    Karaoke captions should show the written dialogue, timed by ASR. Matching
+    by sequence (not by time-bucket alone) recovers from Whisper substitutions
+    and keeps host/line metadata from the episode script.
+    """
+    import difflib
+
+    exp_tokens, exp_meta = _script_token_stream(episode)
+    if not exp_tokens or not aligned:
+        return []
+
+    asr_norm = [_norm_tok(w.get("word") or "") for w in aligned]
+    asr_valid = [i for i, t in enumerate(asr_norm) if t]
+    asr_seq = [asr_norm[i] for i in asr_valid]
+    if not asr_seq:
+        return []
+
+    sm = difflib.SequenceMatcher(a=exp_tokens, b=asr_seq, autojunk=False)
+    exp_to_asr: list[int | None] = [None] * len(exp_tokens)
+    matched = 0
+    for a, b, size in sm.get_matching_blocks():
+        for k in range(size):
+            exp_to_asr[a + k] = asr_valid[b + k]
+            matched += 1
+
+    # Reject pathological matches (e.g. Whisper hallucinated a different script).
+    ratio = matched / max(1, len(exp_tokens))
+    if ratio < 0.45:
+        print(
+            f"[visual_queue] script-anchor match too low ({ratio:.0%}); "
+            "falling back to time-bucket",
+            file=sys.stderr,
+        )
+        return []
+
+    # Assign times: matched tokens take Whisper start/end; gaps interpolate
+    # between neighbouring matched anchors (or line bounds as outer rails).
+    starts: list[int | None] = [None] * len(exp_tokens)
+    ends: list[int | None] = [None] * len(exp_tokens)
+    for i, ai in enumerate(exp_to_asr):
+        if ai is None:
+            continue
+        starts[i] = int(aligned[ai].get("start_ms", 0))
+        ends[i] = int(aligned[ai].get("end_ms", starts[i]))
+
+    # Outer rails from line bounds when available.
+    bound_by_line: dict[tuple[int, int], dict[str, int]] = {}
+    for b in bounds:
+        bound_by_line[(b["seg_idx"], b["line_idx"])] = b
+
+    def _interp_gaps() -> None:
+        n = len(exp_tokens)
+        i = 0
+        while i < n:
+            if starts[i] is not None:
+                i += 1
+                continue
+            j = i
+            while j < n and starts[j] is None:
+                j += 1
+            # Gap [i, j)
+            left_end = ends[i - 1] if i > 0 and ends[i - 1] is not None else None
+            right_start = starts[j] if j < n and starts[j] is not None else None
+            if left_end is None or right_start is None:
+                # Fall back to line bound span split evenly.
+                meta = exp_meta[i]
+                b = bound_by_line.get((meta["segment_idx"], meta["line_idx"]))
+                rail0 = int(b["start_ms"]) if b else (left_end or 0)
+                rail1 = int(b["end_ms"]) if b else (right_start or rail0 + 200)
+                if left_end is not None:
+                    rail0 = left_end
+                if right_start is not None:
+                    rail1 = right_start
+            else:
+                rail0, rail1 = left_end, right_start
+            span = max(1, rail1 - rail0)
+            gap_n = j - i
+            for k in range(gap_n):
+                s = rail0 + (span * k) // gap_n
+                e = rail0 + (span * (k + 1)) // gap_n
+                starts[i + k] = s
+                ends[i + k] = max(e, s + 1)
+            i = j
+
+    _interp_gaps()
+
+    out: list[dict[str, Any]] = []
+    prev_end = 0
+    for i, meta in enumerate(exp_meta):
+        s = int(starts[i] if starts[i] is not None else prev_end)
+        e = int(ends[i] if ends[i] is not None else s + 80)
+        if s < prev_end:
+            s = prev_end
+        if e <= s:
+            e = s + 40
+        out.append({
+            "word": meta["word"],
+            "speaker": meta["speaker"],
+            "start_ms": s,
+            "end_ms": e,
+            "segment_idx": meta["segment_idx"],
+            "line_idx": meta["line_idx"],
+        })
+        prev_end = e
+
+    _stretch_word_ends(out)
+    print(
+        f"[visual_queue] script-anchored {len(out)} words "
+        f"(match {ratio:.0%} of script tokens)",
+        file=sys.stderr,
+    )
     return out
 
 
@@ -324,9 +502,9 @@ def compute_word_timings(
 
     When `audio_path` points to the concatenated podcast WAV (or any audio
     covering the same timeline), we run whisper-based forced alignment and
-    bucket each word into its containing line. Otherwise — or if alignment
-    fails / returns nothing — we fall back to the original length-biased
-    proportional estimator.
+    map timings onto SCRIPT tokens (difflib sequence match). Otherwise — or
+    if alignment fails / match is too weak — we fall back to time-bucketing
+    Whisper tokens, then to the length-biased proportional estimator.
 
     Returned dicts have: word, speaker ("A"/"B"), start_ms, end_ms,
     segment_idx, line_idx.
@@ -339,8 +517,17 @@ def compute_word_timings(
         if ap.exists():
             try:
                 from whisper_align import align as _wx_align  # local import — keeps torch off the import path when video is disabled
+                # Seed Whisper with the script so it prefers the written words
+                # over free transcription (cleaner karaoke tokens + times).
+                prompt_bits: list[str] = []
+                for seg in (episode.get("segments") or [])[:3]:
+                    for line in (seg.get("lines") or [])[:6]:
+                        t = (line.get("text") or "").strip()
+                        if t:
+                            prompt_bits.append(t)
+                initial_prompt = " ".join(prompt_bits)[:800] or None
                 print(f"[visual_queue] aligning {ap.name} via whisper…", file=sys.stderr)
-                aligned = _wx_align(ap)
+                aligned = _wx_align(ap, initial_prompt=initial_prompt)
                 print(f"[visual_queue] whisper produced {len(aligned)} words", file=sys.stderr)
             except Exception as exc:
                 print(f"[visual_queue] whisper alignment failed ({exc!r}); using proportional", file=sys.stderr)
@@ -350,6 +537,9 @@ def compute_word_timings(
 
     if aligned:
         bounds = _line_bounds(episode, durations)
+        anchored = _script_anchored_timings(episode, aligned, bounds)
+        if anchored:
+            return anchored
         bucketed = _bucket_aligned_words(aligned, bounds)
         if bucketed:
             return bucketed
@@ -367,8 +557,9 @@ def group_into_sentences(word_timings: list[dict[str, Any]]) -> list[dict[str, A
     """Group a flat WhisperX-style word list into sentences.
 
     A sentence boundary fires on the FIRST of:
-      - the word ends in `.`, `!`, `?`, or `,` (comma is a soft break — keeps
-        subtitles short and snappy without waiting for a full stop)
+      - the word ends in `.`, `!`, or `?` (full stop / question / exclaim)
+      - the cue already has >= 10 words AND the token ends with `,` (soft break
+        only when the line would otherwise get too long for karaoke)
       - the gap to the next word exceeds SENTENCE_GAP_MS
 
     Returns a list of `{words, start_ms, end_ms, speaker}` dicts. Each word
@@ -384,14 +575,19 @@ def group_into_sentences(word_timings: list[dict[str, Any]]) -> list[dict[str, A
     for i, w in enumerate(word_timings):
         current.append(w)
         token = (w.get("word") or "").strip()
-        ends_with_terminal = bool(token) and token[-1] in ".!?,"
+        ends_with_stop = bool(token) and token[-1] in ".!?"
+        soft_comma = (
+            bool(token)
+            and token[-1] == ","
+            and len(current) >= 10
+        )
         large_gap = False
         if i + 1 < n:
             gap = int(word_timings[i + 1].get("start_ms", 0)) - int(w.get("end_ms", 0))
             if gap > SENTENCE_GAP_MS:
                 large_gap = True
         is_last = i == n - 1
-        if ends_with_terminal or large_gap or is_last:
+        if ends_with_stop or soft_comma or large_gap or is_last:
             counts: dict[str, int] = {}
             for cw in current:
                 sp = cw.get("speaker") or "A"

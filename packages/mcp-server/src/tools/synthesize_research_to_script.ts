@@ -39,8 +39,45 @@ const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const DEFAULT_DURATION_MIN = 8;
 const DEFAULT_VOICE_A = "af_bella";
 const DEFAULT_VOICE_B = "am_michael";
+
+/** Stable display name for a Kokoro voice_id (matches visual_queue.VOICE_REGISTRY). */
+const VOICE_DISPLAY_NAMES: Record<string, string> = {
+  af_bella: "Bella",
+  am_michael: "Michael",
+  af_sarah: "Sarah",
+  am_adam: "Adam",
+  bf_emma: "Emma",
+  bm_george: "George",
+  af_nicole: "Nicole",
+  am_eric: "Eric",
+  bf_alice: "Alice",
+  bm_daniel: "Daniel",
+  bm_lewis: "Lewis",
+  bf_v0isabella: "Isabella",
+  bf_isabella: "Isabella",
+};
+
+function voiceDisplayName(voiceId: string): string {
+  const vid = (voiceId || "").trim();
+  if (VOICE_DISPLAY_NAMES[vid]) return VOICE_DISPLAY_NAMES[vid];
+  const part = vid.includes("_") ? vid.split("_").slice(1).join("_") : vid;
+  const cleaned = part.replace(/^v0/i, "").replace(/[_-]+/g, " ").trim();
+  if (!cleaned) return "Host";
+  return cleaned.replace(/\w/g, (c) => c.toUpperCase());
+}
 const DEFAULT_TONE = "Conversational";
 const DEFAULT_AUDIENCE = "Intermediate";
+const DIALOGUE_STYLE_RULES = [
+  "Dialogue style (hard rules):",
+  "- Never address or name the other host. Do not say Alex, Sam, Jordan, or any",
+  "  host first name. No So Alex / Well Sam / Thanks Jordan / Absolutely, Alex.",
+  "  Spoken text must work if the listener never learns the hosts names.",
+  "- hosts[].name is metadata only and must never appear in any line text.",
+  "- Ban filler: precisely (especially as a one-word reply), delve,",
+  "  it's important to note, in this episode we'll dive.",
+  "  Vary acknowledgements; do not lean on one tic.",
+].join("\n");
+
 // Anything at or above this requests-per-segment chunking.
 const CHUNKED_THRESHOLD_MIN = 30;
 const MAX_ATTEMPTS = 3;
@@ -214,8 +251,14 @@ function patchVoicesAndDuration(
   // doesn't fail with an unknown voice.
   episode.target_duration_minutes = duration;
   const hosts = (episode.hosts as Array<Record<string, unknown>> | undefined) ?? [];
-  if (hosts.length >= 1 && hosts[0]) hosts[0].voice_id = voiceA;
-  if (hosts.length >= 2 && hosts[1]) hosts[1].voice_id = voiceB;
+  if (hosts.length >= 1 && hosts[0]) {
+    hosts[0].voice_id = voiceA;
+    hosts[0].name = voiceDisplayName(voiceA);
+  }
+  if (hosts.length >= 2 && hosts[1]) {
+    hosts[1].voice_id = voiceB;
+    hosts[1].name = voiceDisplayName(voiceB);
+  }
   episode.hosts = hosts;
   return episode;
 }
@@ -329,6 +372,8 @@ function outlinePrompt(): string {
     "- `intent` is a one-sentence description of what each segment achieves",
     "  (used as the prompt for the dialogue-writing call). Make it concrete.",
     "- Apply TONE, AUDIENCE_LEVEL, and FOCUS when choosing what each segment covers.",
+    "- Hosts never name each other in later dialogue: do not write intents like Alex explains. Refer to Host A / Host B only.",
+    "- Ban filler words (precisely, delve, it's important to note) in any sample copy.",
   ].join("\n");
 }
 
@@ -340,9 +385,11 @@ function segmentPrompt(hostA: { name: string; voice_id: string }, hostB: { name:
     "(tone, audience level, focus).",
     "",
     "Hosts (fixed):",
-    `- Host A — ${hostA.name}, the curious learner. Asks questions a smart-but-not-expert listener would ask.`,
-    `- Host B — ${hostB.name}, the knowledgeable explainer. Confident but not smug; concrete examples before abstractions.`,
+    "- Host A - the curious learner. Asks questions a smart-but-not-expert listener would ask.",
+    "- Host B - the knowledgeable explainer. Confident but not smug; concrete examples before abstractions.",
+    "Metadata names exist for on-screen labels only - NEVER speak them.",
     "Roughly 50/50 line split. Each line is one speaker turn.",
+    DIALOGUE_STYLE_RULES,
     "",
     "Return JSON only — no prose, no markdown, no code fences. Schema:",
     "{",
@@ -378,6 +425,7 @@ function segmentPrompt(hostA: { name: string; voice_id: string }, hostB: { name:
     "  hide_at_line must exceed show_at_line. Overlays are visual aids that appear",
     "  ON TOP of the SegmentCard while the topic is actively being discussed.",
     "- Apply TONE, AUDIENCE_LEVEL, and FOCUS faithfully.",
+    DIALOGUE_STYLE_RULES,
   ].join("\n");
 }
 
@@ -510,8 +558,8 @@ async function generateChunked(
   const outline = outlineResult.outline;
   const segments = outline.segments!;
 
-  const hostA = { name: "Alex", voice_id: voiceA };
-  const hostB = { name: "Sam", voice_id: voiceB };
+  const hostA = { name: voiceDisplayName(voiceA), voice_id: voiceA };
+  const hostB = { name: voiceDisplayName(voiceB), voice_id: voiceB };
   const buildSegmentModel = (client: GoogleGenerativeAI) =>
     client.getGenerativeModel({
       model: MODEL,

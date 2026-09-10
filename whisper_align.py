@@ -137,7 +137,11 @@ def align(
             language=language,
             word_timestamps=True,
             vad_filter=False,
-            beam_size=1,
+            # beam_size=5 is still realtime on a 2070 SUPER for TTS and
+            # reduces word-boundary jitter vs greedy (beam_size=1).
+            beam_size=5,
+            best_of=5,
+            temperature=0.0,
             condition_on_previous_text=False,
             initial_prompt=initial_prompt,
         )
@@ -149,12 +153,22 @@ def align(
                 end = float(w.end or start)
                 if end < start:
                     end = start
+                # Whisper sometimes emits zero-width word spans on clean TTS;
+                # give the karaoke highlight a minimum dwell.
+                if end - start < 0.05:
+                    end = start + 0.05
                 words.append({
                     "word": (w.word or "").strip(),
                     "start_ms": int(round(start * 1000)),
                     "end_ms": int(round(end * 1000)),
                     "prob": float(getattr(w, "probability", 0.0) or 0.0),
                 })
+        # Fill micro-gaps between consecutive words so the highlight holds
+        # through coarticulation instead of blinking off for 10–30ms.
+        for i in range(len(words) - 1):
+            gap = words[i + 1]["start_ms"] - words[i]["end_ms"]
+            if 0 < gap <= 60:
+                words[i]["end_ms"] = words[i + 1]["start_ms"]
     except Exception as exc:
         print(f"[whisper_align] transcribe failed for {audio_path.name}: {exc!r}", file=sys.stderr)
         return []

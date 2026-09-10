@@ -10,6 +10,7 @@ import {
 import { BulletOverlay } from "../components/overlays/BulletOverlay";
 import { StatOverlay } from "../components/overlays/StatOverlay";
 import { ChartOverlay } from "../components/overlays/ChartOverlay";
+import { PodcastBackground } from "./PodcastBackground";
 
 export interface WordTiming {
   word: string;
@@ -37,14 +38,11 @@ export interface OverlayEntry {
   show_ms: number;
   hide_ms: number;
   speakerColor: string;
-  // bullets fields
   title?: string;
   items?: string[];
-  // stat fields
   label?: string;
   value?: string;
   subtext?: string;
-  // chart fields
   chart_type?: string;
   data_points?: { label: string; value: number }[];
 }
@@ -65,25 +63,110 @@ export interface SegmentCardProps {
 }
 
 const TEXT = "#f5f0e8";
-
-// Frames over which a sentence (or graphic) fades in/out at its boundaries.
-const SENTENCE_FADE_FRAMES = 10;
+const SENTENCE_FADE_FRAMES = 3;
 const GRAPHIC_FADE_FRAMES = 15;
 const OVERLAY_FADE_FRAMES = 20;
-
-// Frames at the start/end of every card dedicated to the Ken Burns wipe
-// transition. The same number of frames is used by the ffmpeg xfade overlap
-// so the two baked transitions blend across the boundary.
 const TRANSITION_FRAMES = 15;
+
+const resolveLiveSpeaker = (
+  sentences: SentenceTiming[] | undefined,
+  currentMs: number,
+  fallback: "A" | "B" | "both",
+): "A" | "B" | "both" => {
+  if (!sentences || sentences.length === 0) return fallback;
+  let last: "A" | "B" | null = null;
+  for (const s of sentences) {
+    const sp: "A" | "B" = s.speaker === "B" ? "B" : "A";
+    if (s.start_ms <= currentMs) {
+      last = sp;
+      if (currentMs < s.end_ms) return sp;
+    }
+  }
+  return last ?? fallback;
+};
+
+
+const speakerBlend = (sentences: SentenceTiming[], currentMs: number): number => {
+  // 0 = host A, 1 = host B. Smoothstep over 420ms after a switch.
+  let target = 0;
+  let switchAt = -99999;
+  for (const s of sentences) {
+    if (s.start_ms > currentMs) break;
+    const next = s.speaker === "B" ? 1 : 0;
+    if (next !== target) {
+      target = next;
+      switchAt = s.start_ms;
+    }
+  }
+  const t = Math.max(0, Math.min(1, (currentMs - switchAt) / 420));
+  const eased = t * t * (3 - 2 * t);
+  return (1 - target) * (1 - eased) + target * eased;
+};
+
+const MIN_CUE_MS = 2200;
+const TINY_MS = 800;
+const TINY_WORDS = 2;
+const MERGE_GAP_MS = 480;
+
+const buildSubtitleCues = (sentences: SentenceTiming[]): SentenceTiming[] => {
+  if (!sentences.length) return [];
+  const merged: SentenceTiming[] = [];
+  for (const s of sentences) {
+    const last = merged[merged.length - 1];
+    const dur = s.end_ms - s.start_ms;
+    const tiny = s.words.length <= TINY_WORDS || dur < TINY_MS;
+    if (last && tiny && s.speaker === last.speaker) {
+      last.words = [...last.words, ...s.words];
+      last.end_ms = Math.max(last.end_ms, s.end_ms);
+      continue;
+    }
+    if (
+      last &&
+      s.speaker === last.speaker &&
+      s.start_ms - last.end_ms <= MERGE_GAP_MS &&
+      last.words.length < 14
+    ) {
+      last.words = [...last.words, ...s.words];
+      last.end_ms = Math.max(last.end_ms, s.end_ms);
+      continue;
+    }
+    merged.push({ ...s, words: [...s.words] });
+  }
+  return merged;
+};
+
+const pickCue = (
+  cues: SentenceTiming[],
+  currentMs: number,
+): { cue: SentenceTiming | null; held: boolean } => {
+  if (!cues.length) return { cue: null, held: false };
+  let idx = -1;
+  for (let i = 0; i < cues.length; i++) {
+    if (cues[i].start_ms <= currentMs) idx = i;
+  }
+  if (idx < 0) return { cue: null, held: false };
+  const cue = cues[idx];
+  const next = cues[idx + 1];
+  if (next && currentMs >= next.start_ms) {
+    return { cue: next, held: currentMs >= next.end_ms };
+  }
+  const held = currentMs >= cue.end_ms;
+  // Keep a short cue up until the next line, and at least MIN_CUE_MS.
+  if (next && currentMs < next.start_ms) return { cue, held };
+  if (!next && currentMs < cue.start_ms + MIN_CUE_MS) return { cue, held };
+  return { cue, held };
+};
 
 export const SegmentCard: React.FC<SegmentCardProps> = ({
   title,
+  bullets,
   photo_url,
   host_a_name,
   host_b_name,
   host_a_color,
   host_b_color,
   current_speaker,
+  segment_number,
   sentence_timings,
   graphics,
   overlays,
@@ -93,8 +176,36 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
   const currentMs = (frame / fps) * 1000;
 
   const hasPhoto = typeof photo_url === "string" && photo_url.trim().length > 0;
+  const graphicsList = graphics ?? [];
+  const overlaysList = overlays ?? [];
+  const liveSpeaker = resolveLiveSpeaker(
+    sentence_timings,
+    currentMs,
+    current_speaker,
+  );
+  const cues = React.useMemo(
+    () => buildSubtitleCues(sentence_timings ?? []),
+    [sentence_timings],
+  );
+  const { cue, held } = pickCue(cues, currentMs);
+  const speakMix = speakerBlend(sentence_timings ?? [], currentMs);
+  const talkingPoints =
+    bullets && bullets.length > 0
+      ? bullets
+      : [
+          title,
+          liveSpeaker === "B" ? "Co-host responding" : "Host laying out the problem",
+        ];
 
-  // Ken Burns scale 1.00 -> 1.08 across full duration.
+  const hasActiveGraphic = graphicsList.some(
+    (g) =>
+      g.start_ms <= currentMs && currentMs < g.end_ms && Boolean(g.photo_url),
+  );
+  const hasActiveOverlay = overlaysList.some(
+    (o) => o.show_ms <= currentMs && currentMs < o.hide_ms,
+  );
+  const showStageCard = !hasActiveGraphic && !hasActiveOverlay && !hasPhoto;
+
   const kenBurns = interpolate(
     frame,
     [0, Math.max(1, durationInFrames - 1)],
@@ -102,8 +213,6 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
   );
 
-  // Intro: spring-driven scale 0.9 → 1.0 plus opacity ramp 0 → 1 over the
-  // first TRANSITION_FRAMES.
   const introSpring = spring({
     frame,
     fps,
@@ -115,8 +224,6 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
     extrapolateRight: "clamp",
   });
 
-  // Outro: linear 0 → 1 ramp over the last TRANSITION_FRAMES that drives a
-  // 1.0 → 1.15 scale-up on the background and a 1 → 0 fade on the content.
   const outroProgress = interpolate(
     frame,
     [durationInFrames - TRANSITION_FRAMES, durationInFrames],
@@ -124,17 +231,19 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
   );
 
-  // Compose: Ken Burns pan layers on top of the transition scale, content
-  // opacity is intro-in × outro-out.
   const transitionBgScale = introScale * (1 + outroProgress * 0.15);
   const contentOpacity = introOpacity * (1 - outroProgress);
 
-  // Bottom speaker strip slides up over first 20 frames.
   const stripProgress = interpolate(frame, [0, 20], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
   const stripTranslate = interpolate(stripProgress, [0, 1], [100, 0]);
+
+  const titleLabel = segment_number
+    ? `${String(segment_number).padStart(2, "0")}  \u00b7  ${title}`
+    : title;
+
 
   return (
     <AbsoluteFill
@@ -144,10 +253,6 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
         fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif",
       }}
     >
-      {/* Background layer: scales with the intro/outro transition. The Ken
-          Burns pan is nested INSIDE so it layers on top of the transition
-          zoom. The dark overlay rides along since it scales fullscreen-to-
-          fullscreen regardless. */}
       <AbsoluteFill
         style={{
           transform: `scale(${transitionBgScale})`,
@@ -167,30 +272,72 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
             />
           </AbsoluteFill>
         ) : (
-          <AbsoluteFill
-            style={{
-              background:
-                "linear-gradient(135deg, #1a0b3d 0%, #2d1b69 45%, #0f2a5e 100%)",
-            }}
-          />
+          <PodcastBackground topic={title} subtitle="" variant="backdrop" />
         )}
 
-        {/* Dark overlay for readability. */}
-        <AbsoluteFill style={{ backgroundColor: "rgba(0,0,0,0.55)" }} />
+        <AbsoluteFill
+          style={{ backgroundColor: hasPhoto ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.22)" }}
+        />
       </AbsoluteFill>
 
-      {/* Content layer: fades in over TRANSITION_FRAMES and out over the
-          last TRANSITION_FRAMES so the next card's intro blends in. */}
       <AbsoluteFill style={{ opacity: contentOpacity }}>
-        {/* Context-aware center graphic. */}
-        <CenterGraphic graphics={graphics ?? []} currentMs={currentMs} frame={frame} fps={fps} />
+        {showStageCard ? (
+          <StageBoard
+            frame={frame}
+            fps={fps}
+            title={title}
+            talkingPoints={talkingPoints}
+            cue={cue}
+            hostAName={host_a_name}
+            hostBName={host_b_name}
+            hostAColor={host_a_color}
+            hostBColor={host_b_color}
+            liveSpeaker={liveSpeaker}
+            speakMix={speakMix}
+          />
+        ) : null}
 
-        {/* Context-aware overlays (bullets / stat / chart). */}
-        <CenterOverlay overlays={overlays ?? []} currentMs={currentMs} frame={frame} fps={fps} />
+        <CenterGraphic graphics={graphicsList} currentMs={currentMs} frame={frame} fps={fps} />
+        <CenterOverlay overlays={overlaysList} currentMs={currentMs} frame={frame} fps={fps} />
 
-        {/* Subtitle band: frosted slab above the speaker strip. */}
+        <div
+          style={{
+            position: "absolute",
+            top: 40,
+            left: 80,
+            right: 80,
+            display: "flex",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 26,
+              fontWeight: 700,
+              letterSpacing: 3.5,
+              textTransform: "uppercase",
+              color: "rgba(245,240,232,0.95)",
+              padding: "12px 28px",
+              borderRadius: 999,
+              backgroundColor: "rgba(0,0,0,0.4)",
+              border: "1px solid rgba(233,213,255,0.22)",
+              backdropFilter: "blur(14px)",
+              WebkitBackdropFilter: "blur(14px)",
+              textShadow: "0 2px 10px rgba(0,0,0,0.65)",
+              maxWidth: "90%",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {titleLabel}
+          </div>
+        </div>
+
         <SubtitleBand
-          sentences={sentence_timings ?? []}
+          cue={cue}
+          held={held}
           currentMs={currentMs}
           frame={frame}
           fps={fps}
@@ -199,7 +346,6 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
           hostBColor={host_b_color}
         />
 
-        {/* Bottom speaker strip. */}
         <div
           style={{
             position: "absolute",
@@ -213,63 +359,132 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
             display: "flex",
             alignItems: "center",
             padding: "0 60px",
-            gap: 36,
+            gap: 48,
             transform: `translateY(${stripTranslate}%)`,
           }}
         >
-          {current_speaker === "A" || current_speaker === "both" ? (
-            <SpeakerChip name={host_a_name} color={host_a_color} />
-          ) : null}
-          {current_speaker === "B" || current_speaker === "both" ? (
-            <SpeakerChip name={host_b_name} color={host_b_color} />
-          ) : null}
-          {current_speaker === "both" ? (
-            <div
-              style={{
-                marginLeft: "auto",
-                color: "rgba(245,240,232,0.5)",
-                fontSize: 18,
-                letterSpacing: 3,
-                textTransform: "uppercase",
-              }}
-            >
-              In Conversation
-            </div>
-          ) : null}
+          <SpeakerChip
+            name={host_a_name}
+            color={host_a_color}
+            active={liveSpeaker !== "B"}
+            frame={frame}
+            energy={1 - speakMix}
+          />
+          <SpeakerChip
+            name={host_b_name}
+            color={host_b_color}
+            active={liveSpeaker !== "A"}
+            frame={frame}
+            energy={speakMix}
+          />
         </div>
       </AbsoluteFill>
     </AbsoluteFill>
   );
 };
 
-const SpeakerChip: React.FC<{ name: string; color: string }> = ({
-  name,
-  color,
-}) => (
-  <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+const MINI_BARS = 6;
+const MINI_BAR_W = 3;
+const MINI_GAP = 3;
+const MINI_H = 24;
+const MINI_W = MINI_BARS * MINI_BAR_W + (MINI_BARS - 1) * MINI_GAP;
+
+const mixHexToward = (hex: string, toward: string, amount: number): string => {
+  const parse = (h: string) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(h.trim());
+    if (!m) return [255, 255, 255];
+    const v = parseInt(m[1], 16);
+    return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+  };
+  const a = parse(hex);
+  const b = parse(toward);
+  const t = Math.max(0, Math.min(1, amount));
+  const rgb = a.map((c, i) => Math.round(c + (b[i] - c) * t));
+  return `#${rgb.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+};
+
+const MiniWave: React.FC<{
+  frame: number;
+  color: string;
+  energy: number;
+}> = ({ frame, color, energy }) => {
+  // Idle bars keep a muted tint of the host color so A/B stay distinct even
+  // when the other host is talking; active bars use the full brand color.
+  const barColor = energy > 0.45 ? color : mixHexToward(color, "#1a1a2e", 0.55);
+  return (
     <div
       style={{
-        width: 20,
-        height: 20,
-        borderRadius: 10,
-        backgroundColor: color,
-        boxShadow: `0 0 16px ${color}`,
-      }}
-    />
-    <div
-      style={{
-        fontSize: 32,
-        fontWeight: 700,
-        color: TEXT,
-        letterSpacing: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: MINI_GAP,
+        width: MINI_W,
+        height: MINI_H,
+        flexShrink: 0,
       }}
     >
-      {name}
+      {Array.from({ length: MINI_BARS }).map((_, i) => {
+        const phase = i * 0.17;
+        const a = Math.sin(frame * (0.18 + energy * 0.12) + phase);
+        const b = Math.sin(frame * (0.31 + energy * 0.08) + phase * 1.7);
+        const raw = 0.35 + 0.65 * (0.5 + 0.5 * (a * 0.65 + b * 0.35));
+        const h = Math.max(3, raw * MINI_H * (0.12 + 0.88 * energy));
+        return (
+          <div
+            key={i}
+            style={{
+              width: MINI_BAR_W,
+              height: h,
+              borderRadius: 1,
+              backgroundColor: barColor,
+              opacity: 0.4 + 0.6 * Math.max(energy, 0.25),
+              boxShadow: energy > 0.55 ? `0 0 ${6 + energy * 8}px ${color}` : "none",
+            }}
+          />
+        );
+      })}
     </div>
-  </div>
-);
+  );
+};
 
-// Parse "#RRGGBB" into "r, g, b" for rgba() composition. Falls back to white.
+const SpeakerChip: React.FC<{
+  name: string;
+  color: string;
+  active: boolean;
+  frame: number;
+  energy: number;
+}> = ({ name, color, active, frame, energy }) => {
+  const pulse = active ? 1 + 0.05 * Math.sin(frame * 0.22) : 1;
+  const targetBright = active ? 1 : 0.42;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+      }}
+    >
+      <MiniWave frame={frame} color={color} energy={energy} />
+      <div
+        style={{
+          fontSize: 32,
+          fontWeight: active ? 800 : 600,
+          color: active ? TEXT : "rgba(245,240,232,0.7)",
+          letterSpacing: 1,
+          textShadow: active ? `0 0 16px ${color}` : "none",
+          opacity: targetBright,
+          transform: `scale(${active ? pulse : 0.96})`,
+          transformOrigin: "left center",
+          filter: active ? "none" : "saturate(0.7)",
+        }}
+      >
+        {name}
+      </div>
+    </div>
+  );
+};
+
 const hexToRgb = (hex: string): string => {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
   if (!m) return "255, 255, 255";
@@ -278,7 +493,8 @@ const hexToRgb = (hex: string): string => {
 };
 
 interface SubtitleBandProps {
-  sentences: SentenceTiming[];
+  cue: SentenceTiming | null;
+  held: boolean;
   currentMs: number;
   frame: number;
   fps: number;
@@ -288,7 +504,8 @@ interface SubtitleBandProps {
 }
 
 const SubtitleBand: React.FC<SubtitleBandProps> = ({
-  sentences,
+  cue,
+  held,
   currentMs,
   frame,
   fps,
@@ -296,8 +513,6 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
   hostAColor,
   hostBColor,
 }) => {
-  // Frosted-glass slab pinned just above the bottom speaker strip. Height is
-  // intentionally unbounded so the band grows to fit a long sentence.
   const bandStyle: React.CSSProperties = {
     position: "absolute",
     left: 0,
@@ -307,7 +522,7 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
     paddingBottom: 28,
     paddingLeft: 80,
     paddingRight: 80,
-    backgroundColor: "rgba(0, 0, 0, 0.25)",
+    backgroundColor: "rgba(0, 0, 0, 0.62)",
     backdropFilter: "blur(20px)",
     WebkitBackdropFilter: "blur(20px)",
     display: "flex",
@@ -316,9 +531,7 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
     boxSizing: "border-box",
   };
 
-  // No sentence timings at all → fall back to the static segment title so the
-  // band is never completely empty when alignment fails.
-  if (!sentences || sentences.length === 0) {
+  if (!cue) {
     return (
       <div style={bandStyle}>
         <div
@@ -336,39 +549,7 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
     );
   }
 
-  // Find the active sentence (the one whose [start_ms, end_ms) covers
-  // currentMs). When we're between sentences, render nothing — the band just
-  // shows a frosted slab with no text.
-  let activeIdx = -1;
-  for (let i = 0; i < sentences.length; i++) {
-    const s = sentences[i];
-    if (s.start_ms <= currentMs && currentMs < s.end_ms) {
-      activeIdx = i;
-      break;
-    }
-  }
-  if (activeIdx === -1) {
-    return <div style={bandStyle} />;
-  }
-
-  const sentence = sentences[activeIdx];
-  // Cross-fade in over the first SENTENCE_FADE_FRAMES of the sentence and out
-  // over the last SENTENCE_FADE_FRAMES.
-  const startFrame = (sentence.start_ms / 1000) * fps;
-  const endFrame = (sentence.end_ms / 1000) * fps;
-  const fadeIn = interpolate(
-    frame,
-    [startFrame, startFrame + SENTENCE_FADE_FRAMES],
-    [0, 1],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
-  );
-  const fadeOut = interpolate(
-    frame,
-    [endFrame - SENTENCE_FADE_FRAMES, endFrame],
-    [1, 0],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
-  );
-  const opacity = Math.min(fadeIn, fadeOut);
+  const lastIdx = cue.words.length - 1;
 
   return (
     <div style={bandStyle}>
@@ -380,45 +561,68 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
           alignItems: "center",
           justifyContent: "center",
           gap: 18,
-          opacity,
           maxWidth: "100%",
         }}
       >
-        {sentence.words.map((w, i) => {
+        {cue.words.map((w, i) => {
           const speakerColor = w.speaker === "A" ? hostAColor : hostBColor;
           const rgb = hexToRgb(speakerColor);
+          // Hold the highlight until the next word begins (or cue end) so
+          // short Whisper word-spans don't blink off mid-syllable.
+          const nextStart =
+            i + 1 < cue.words.length
+              ? cue.words[i + 1].start_ms
+              : Math.max(w.end_ms, cue.end_ms);
+          const activeUntil = Math.max(w.end_ms, Math.min(nextStart, w.end_ms + 280));
+          const isActive =
+            !held && w.start_ms <= currentMs && currentMs < activeUntil;
+          const isLastHeld = held && i === lastIdx;
 
           let color: string;
           let fontWeight = 500;
           let scale = 1;
-          let textShadow = "none";
+          let textShadow = "0 2px 10px rgba(0,0,0,0.9)";
+          let backgroundColor = "transparent";
+          let padding = "0px 2px 4px 2px";
+          let borderRadius = 0;
+          let boxShadow = "none";
 
-          if (w.end_ms < currentMs) {
-            // Spoken.
-            color = `rgba(${rgb}, 0.45)`;
-          } else if (w.start_ms <= currentMs && currentMs <= w.end_ms) {
-            // Active.
-            color = `rgb(${rgb})`;
+          if (isActive || isLastHeld) {
+            color = "#0B0B1A";
             fontWeight = 800;
-            const popSpring = spring({
-              frame: frame - (w.start_ms / 1000) * fps,
-              fps,
-              config: { damping: 12, stiffness: 180, mass: 0.4 },
-            });
-            scale = interpolate(popSpring, [0, 1], [1, 1.1]);
-            textShadow = `0 0 14px rgba(${rgb}, 0.75), 0 2px 8px rgba(0,0,0,0.8)`;
+            backgroundColor = "#F5F0E8";
+            padding = "4px 14px 6px 14px";
+            borderRadius = 10;
+            boxShadow = `0 0 0 2px rgb(${rgb}), 0 8px 24px rgba(0,0,0,0.45)`;
+            textShadow = "none";
+            if (isActive) {
+              const popSpring = spring({
+                frame: frame - (w.start_ms / 1000) * fps,
+                fps,
+                config: { damping: 12, stiffness: 220, mass: 0.35 },
+              });
+              scale = interpolate(popSpring, [0, 1], [1, 1.14]);
+            }
+          } else if (w.end_ms < currentMs || held) {
+            color = "#E8E4F5";
+            fontWeight = 700;
           } else {
-            // Upcoming.
-            color = "rgba(255, 255, 255, 0.5)";
+            color = "#F5F0E8";
+            fontWeight = 600;
+            textShadow = "0 2px 12px rgba(0,0,0,0.95)";
           }
 
           return (
             <span
               key={i}
               style={{
-                fontSize: 56,
+                fontSize: 52,
                 fontWeight,
                 color,
+                backgroundColor,
+                padding,
+                borderRadius,
+                boxShadow,
                 transform: `scale(${scale})`,
                 transformOrigin: "center",
                 textShadow,
@@ -431,6 +635,327 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
             </span>
           );
         })}
+      </div>
+    </div>
+  );
+};
+
+
+const StageBoard: React.FC<{
+  frame: number;
+  fps: number;
+  title: string;
+  talkingPoints: string[];
+  cue: SentenceTiming | null;
+  hostAName: string;
+  hostBName: string;
+  hostAColor: string;
+  hostBColor: string;
+  liveSpeaker: "A" | "B" | "both";
+  speakMix: number;
+}> = ({
+  frame,
+  fps,
+  talkingPoints,
+  cue,
+  hostAName,
+  hostBName,
+  hostAColor,
+  hostBColor,
+  liveSpeaker,
+  speakMix,
+}) => {
+  const intro = spring({
+    frame,
+    fps,
+    config: { damping: 16, stiffness: 120, mass: 0.7 },
+  });
+  const enter = interpolate(intro, [0, 1], [24, 0]);
+  const op = interpolate(intro, [0, 1], [0, 1]);
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 120,
+        left: 64,
+        right: 64,
+        bottom: 280,
+        display: "flex",
+        gap: 36,
+        opacity: op,
+        transform: `translateY(${enter}px)`,
+        pointerEvents: "none",
+      }}
+    >
+      <div
+        style={{
+          width: 380,
+          display: "flex",
+          flexDirection: "column",
+          gap: 18,
+          justifyContent: "center",
+        }}
+      >
+        <StageSpeakerRow
+          name={hostAName}
+          role="Host"
+          color={hostAColor}
+          energy={1 - speakMix}
+          frame={frame}
+        />
+        <StageSpeakerRow
+          name={hostBName}
+          role="Co-Host"
+          color={hostBColor}
+          energy={speakMix}
+          frame={frame}
+        />
+      </div>
+
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+          justifyContent: "center",
+          minWidth: 0,
+        }}
+      >
+        <div
+          style={{
+            padding: "28px 32px",
+            borderRadius: 24,
+            background:
+              "linear-gradient(180deg, rgba(18,18,40,0.78) 0%, rgba(8,8,20,0.58) 100%)",
+            border: "1px solid rgba(233,213,255,0.22)",
+            boxShadow: "0 18px 50px rgba(0,0,0,0.4)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 14,
+              letterSpacing: 4,
+              textTransform: "uppercase",
+              color: "rgba(233,213,255,0.85)",
+              fontWeight: 700,
+              marginBottom: 14,
+            }}
+          >
+            In this segment
+          </div>
+          {talkingPoints.slice(0, 3).map((pt, i) => (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 14,
+                marginTop: i === 0 ? 0 : 14,
+              }}
+            >
+              <div
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 5,
+                  marginTop: 10,
+                  backgroundColor: i === 0 ? hostAColor : hostBColor,
+                  flexShrink: 0,
+                }}
+              />
+              <div
+                style={{
+                  fontSize: 28,
+                  fontWeight: 600,
+                  color: TEXT,
+                  lineHeight: 1.25,
+                }}
+              >
+                {pt}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ flex: 1, minHeight: 120, display: "flex", alignItems: "center" }}>
+          <DualWaveform
+            frame={frame}
+            colorA={hostAColor}
+            colorB={hostBColor}
+            speakMix={speakMix}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DualWaveform: React.FC<{
+  frame: number;
+  colorA: string;
+  colorB: string;
+  speakMix: number;
+  compact?: boolean;
+}> = ({ frame, colorA, colorB, speakMix, compact = false }) => {
+  const bars = compact ? 36 : 52;
+  const energyA = 1 - speakMix;
+  const energyB = speakMix;
+  const scaleA = 0.42 + 0.9 * energyA;
+  const scaleB = 0.42 + 0.9 * energyB;
+  const hBase = compact ? 28 : 52;
+  const padY = compact ? 8 : 14;
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        padding: `${padY}px 4px`,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        justifyContent: "center",
+        gap: compact ? 4 : 8,
+      }}
+    >
+      <WaveRow
+        frame={frame}
+        color={colorA}
+        energy={energyA}
+        scale={scaleA}
+        bars={bars}
+        baseH={hBase}
+        seed={0.17}
+      />
+      <WaveRow
+        frame={frame}
+        color={colorB}
+        energy={energyB}
+        scale={scaleB}
+        bars={bars}
+        baseH={hBase}
+        seed={0.31}
+        mirror
+      />
+    </div>
+  );
+};
+
+const WaveRow: React.FC<{
+  frame: number;
+  color: string;
+  energy: number;
+  scale: number;
+  bars: number;
+  baseH: number;
+  seed: number;
+  mirror?: boolean;
+}> = ({ frame, color, energy, scale, bars, baseH, seed, mirror = false }) => {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: mirror ? "flex-start" : "flex-end",
+        justifyContent: "space-between",
+        height: baseH * (0.55 + 0.9 * energy),
+        opacity: 0.28 + 0.72 * energy,
+        transform: `scaleY(${scale})`,
+        transformOrigin: mirror ? "top center" : "bottom center",
+      }}
+    >
+      {Array.from({ length: bars }).map((_, i) => {
+        const phase = i * seed;
+        const a = Math.sin(frame * (0.18 + energy * 0.12) + phase);
+        const b = Math.sin(frame * (0.31 + energy * 0.08) + phase * 1.7);
+        const raw = 0.35 + 0.65 * (0.5 + 0.5 * (a * 0.65 + b * 0.35));
+        const h = Math.max(4, raw * baseH * (0.45 + 0.7 * energy));
+        return (
+          <div
+            key={i}
+            style={{
+              width: 6,
+              height: h,
+              borderRadius: 3,
+              backgroundColor: color,
+              boxShadow: energy > 0.55 ? `0 0 ${8 + energy * 10}px ${color}` : "none",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+};
+
+const StageSpeakerRow: React.FC<{
+  name: string;
+  role: string;
+  color: string;
+  energy: number;
+  frame: number;
+}> = ({ name, role, color, energy, frame }) => {
+  const pulse = 1 + 0.03 * energy * Math.sin(frame * 0.2);
+  const glow = 0.12 + energy * (0.5 + 0.4 * (0.5 + 0.5 * Math.sin(frame * 0.2)));
+  const avatar = 64 + 20 * energy;
+  const nameSize = 28 + 8 * energy;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 20,
+        padding: `${16 + 6 * energy}px 22px`,
+        borderRadius: 22,
+        background: `linear-gradient(180deg, rgba(18,18,40,${0.35 + 0.45 * energy}) 0%, rgba(8,8,20,${0.3 + 0.3 * energy}) 100%)`,
+        border: `1px solid ${energy > 0.45 ? color + "cc" : "rgba(255,255,255,0.08)"}`,
+        boxShadow: energy > 0.4 ? `0 0 ${22 + glow * 20}px ${color}99` : "none",
+        transform: `scale(${pulse})`,
+        transformOrigin: "left center",
+        opacity: 0.5 + 0.5 * energy,
+      }}
+    >
+      <div
+        style={{
+          width: avatar,
+          height: avatar,
+          borderRadius: 999,
+          backgroundColor: color,
+          boxShadow: `0 0 ${12 + 16 * energy}px ${color}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontSize: 28 + 8 * energy,
+          fontWeight: 700,
+          color: "#0a0a16",
+        }}
+      >
+        {name.slice(0, 1).toUpperCase()}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 13,
+            letterSpacing: 3,
+            textTransform: "uppercase",
+            color,
+            fontWeight: 700,
+          }}
+        >
+          {role}
+        </div>
+        <div
+          style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontSize: nameSize,
+            fontWeight: 700,
+            color: TEXT,
+            lineHeight: 1.1,
+          }}
+        >
+          {name}
+        </div>
       </div>
     </div>
   );
@@ -451,8 +976,6 @@ const CenterGraphic: React.FC<CenterGraphicProps> = ({
 }) => {
   if (!graphics || graphics.length === 0) return null;
 
-  // Pick the first active graphic. With non-overlapping windows there's only
-  // ever one candidate, but the linear scan is cheap regardless.
   let active: GraphicEntry | null = null;
   for (const g of graphics) {
     if (g.start_ms <= currentMs && currentMs < g.end_ms) {
@@ -478,9 +1001,6 @@ const CenterGraphic: React.FC<CenterGraphicProps> = ({
   );
   const opacity = Math.min(fadeIn, fadeOut);
 
-  // Card sits roughly in the upper-middle of the screen. It's bounded so it
-  // never collides with the subtitle band (bottom 110+ px is owned by the
-  // strip + subtitles).
   return (
     <div
       style={{
@@ -527,8 +1047,6 @@ const CenterOverlay: React.FC<CenterOverlayProps> = ({
 }) => {
   if (!overlays || overlays.length === 0) return null;
 
-  // Pick the first active overlay. Overlays are expected to be non-overlapping;
-  // a linear scan is fine for the small N.
   let active: OverlayEntry | null = null;
   for (const o of overlays) {
     if (o.show_ms <= currentMs && currentMs < o.hide_ms) {
@@ -554,14 +1072,9 @@ const CenterOverlay: React.FC<CenterOverlayProps> = ({
   );
   const wrapperOpacity = Math.min(fadeIn, fadeOut);
 
-  // Progress 0→1 across the overlay's [show_ms, hide_ms) window. Inner
-  // components key their stagger animations off this so they're independent
-  // of absolute frame.
   const span = Math.max(1, active.hide_ms - active.show_ms);
   const progress = Math.max(0, Math.min(1, (currentMs - active.show_ms) / span));
 
-  // Center the overlay between the title pill at top and the subtitle band at
-  // the bottom (~220px reserved for subtitles + speaker strip).
   const wrapper: React.CSSProperties = {
     position: "absolute",
     top: 100,

@@ -135,27 +135,27 @@ export async function composeFinalVideo(
   const audioInputIdx = visuals.length;
 
   // Per-visual filter: scale + pad to WxH, force CFR, trim to exact duration.
+  // Non-last clips get tpad clone of TRANSITION_S so xfade overlap eats PAD
+  // frames, not content. Offset = unpadded cumulative duration. This keeps
+  // composed video length == sum(clip durations) and stops karaoke drift
+  // that the old (cumulative - i*TRANSITION) formula introduced (~0.5s per cut).
+  const TRANSITION_S = 0.5;
+  const lastI = visuals.length - 1;
   const filterParts: string[] = [];
   for (let i = 0; i < visuals.length; i++) {
     const dur = (clipDurationsMs[i] / 1000).toFixed(3);
-    filterParts.push(
+    let chain =
       `[${i}:v]scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
-        `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps},` +
-        `trim=duration=${dur},setpts=PTS-STARTPTS[v${i}]`
-    );
+      `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps},` +
+      `trim=duration=${dur},setpts=PTS-STARTPTS`;
+    if (i !== lastI) {
+      chain += `,tpad=stop_mode=clone:stop_duration=${TRANSITION_S.toFixed(3)}`;
+    }
+    filterParts.push(`${chain}[v${i}]`);
   }
 
-  // Stitch via xfade so the baked transition frames (15 at 30fps = 0.5s on
-  // each side) overlap and blend. transition=fade is a pure opacity blend;
-  // the scale animation is already baked into the Remotion clips so ffmpeg
-  // just needs to cross-blend the pixels.
-  //
-  // xfade(A, B, duration=d, offset=o) outputs A from [0, o], a crossfade
-  // from [o, o+d] using A's tail and B's head, then B from [d, end_of_B].
-  // The output length of the chain after stitching clip i is therefore
-  // sum(D[0..i]) - i*0.5. So the offset of the i-th xfade (transitioning
-  // INTO clip i) is sum(D[0..i-1]) - i*0.5.
-  const TRANSITION_S = 0.5;
+  // Stitch via padded xfade. transition=fade is a pure opacity blend; the
+  // scale animation is already baked into the Remotion clips.
   let lastLabel: string;
   if (visuals.length === 1) {
     lastLabel = "v0";
@@ -164,7 +164,7 @@ export async function composeFinalVideo(
     let prevLabel = "v0";
     for (let i = 1; i < visuals.length; i++) {
       cumulativeS += clipDurationsMs[i - 1] / 1000;
-      const offsetS = cumulativeS - i * TRANSITION_S;
+      const offsetS = cumulativeS; // unpadded; pad is what xfade consumes
       const outLabel = i === visuals.length - 1 ? "vout" : `vx${i}`;
       filterParts.push(
         `[${prevLabel}][v${i}]xfade=transition=fade:duration=${TRANSITION_S.toFixed(
