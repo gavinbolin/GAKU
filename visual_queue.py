@@ -50,7 +50,7 @@ def _save_voice_colors(data: dict[str, Any]) -> None:
     try:
         _VOICE_COLORS_PATH.parent.mkdir(parents=True, exist_ok=True)
         _VOICE_COLORS_PATH.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\\n",
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
     except OSError as exc:
