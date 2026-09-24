@@ -10,30 +10,22 @@ export interface StatOverlayProps {
 }
 
 /**
- * Stat value reveal -- DEFAULT: static correct text (fade/scale entrance only).
+ * Stat value reveal -- dual path per Gavin (2026-09-24):
  *
- * Root cause of the Enterprise bug ("5-10%" flashing as "1-10%" ... "4-10%"):
- *   parseNumeric peeled the first number off ranges as num=5 + suffix="-10%",
- *   then lerped 0->5 so mid-frames invented wrong metrics. Commit 7a3c152 only
- *   shortened that window (0.5 -> 0.12); it did not stop the wrong prefixes.
+ *   1) Ranges / multi-number (e.g. "5-10%", "3–5x") → static snap of the full
+ *      correct string. Card opacity + scale only. NEVER digit-roll through
+ *      wrong intermediate values (Enterprise bug: "5-10%" → "1-10%"…"4-10%").
+ *   2) Simple single metrics (efficiency increases, etc.) → whole-number
+ *      count-up (alt b): lerp the numeric value and re-format
+ *      prefix+number+suffix each frame ("12%" → "27%" → "42%").
+ *      NOT digit-slot rolling; never invent wrong prefixes.
  *
- * Default (a) -- implemented: always render the scripted `value` string from
- *   the first frame. Card opacity + scale provide the entrance motion.
- *
- * Alternatives (for Gavin / product -- not wired as default):
- *   (a) Static snap -- current default. Correct final string immediately;
- *       motion = fade/scale only. Safest for ranges ("5-10%", "3-5x").
- *   (b) Whole-number lerp -- ONLY for simple single numbers ("42%", "$4.8T"):
- *       interpolate the numeric value and re-format prefix+number+suffix each
- *       frame. Never digit-roll; never touch hyphen/en-dash ranges or any
- *       string whose suffix still contains a digit. See isSimpleSingleNumber
- *       + the unused countUpDisplay helper below if you want to opt in.
- *   (c) Progress / fill motion -- keep the number text fixed at the correct
- *       final string; animate a bar, ring, or underline fill underneath
- *       (StatAnimation's ring mode is the precedent).
+ * Gate: isSimpleSingleNumber(value) → countUpDisplay; else → raw value.
+ * Root cause of the Enterprise bug: parseNumeric peeled the first number off
+ * ranges as num=5 + suffix="-10%", then lerped 0→5. Ranges stay static forever.
  */
 
-// Kept for optional alt (b) and for documenting why ranges must stay static.
+// Range detector: hyphen / en-dash / em-dash bounds must stay static forever.
 const RANGE_RE = /\d\s*[-–—]\s*\d/;
 
 const parseNumeric = (
@@ -46,7 +38,7 @@ const parseNumeric = (
   return { num: n, prefix: m[1], suffix: m[3] };
 };
 
-/** Gate for optional alt (b): count-up must not invent a wrong prefix/bound. */
+/** Gate: count-up only when a single metric; must not invent a wrong prefix/bound. */
 export const isSimpleSingleNumber = (raw: string): boolean => {
   const trimmed = raw.trim();
   if (!trimmed || RANGE_RE.test(trimmed)) return false;
@@ -62,9 +54,9 @@ const formatNumeric = (n: number, original: number): string => {
 };
 
 /**
- * Optional alt (b): whole-value count-up for simple numbers only.
- * Not used by the default render path -- call from displayValue if product
- * opts into lerp motion later.
+ * Whole-value count-up for simple single numbers only (Gavin rule 2).
+ * Formats the full number each frame; ranges/multi-number fall through to
+ * the trimmed original via isSimpleSingleNumber.
  */
 export const countUpDisplay = (value: string, progress: number): string => {
   const trimmed = value.trim();
@@ -99,10 +91,10 @@ export const StatOverlay: React.FC<StatOverlayProps> = ({
     extrapolateRight: "clamp",
   });
 
-  // Default (a): scripted value as-is. Do NOT count digits -- ranges and
-  // multi-number strings must never pass through wrong intermediate text.
-  // To enable alt (b) for simple numbers only: displayValue = countUpDisplay(value, progress);
-  const displayValue = value.trim();
+  // Gavin 2026-09-24: simple single numbers count up; ranges/multi stay static.
+  const displayValue = isSimpleSingleNumber(value)
+    ? countUpDisplay(value, progress)
+    : value.trim();
 
   return (
     <div
