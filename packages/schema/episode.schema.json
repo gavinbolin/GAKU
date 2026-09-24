@@ -34,26 +34,56 @@
       "type": "array",
       "minItems": 2,
       "maxItems": 2,
-      "items": { "$ref": "#/definitions/Host" }
+      "items": {
+        "$ref": "#/definitions/Host"
+      }
     },
     "segments": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/definitions/Segment" }
+      "items": {
+        "$ref": "#/definitions/Segment"
+      }
+    },
+    "series": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "YouTube series key from podcast-pipeline/config/playlist_series.json (e.g. hbr). Written at research time when source is HBR; used to auto-add uploads to the series playlist and format the title tag."
+    },
+    "keywords": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Optional YouTube tags / topic keywords."
+    },
+    "thumbnail_hook": {
+      "type": "string",
+      "description": "Optional 2-4 word YouTube thumbnail hook (Impact-style). When set, hybrid thumb gen uses this instead of topic-word fallback. Episode-folder thumbnail.png still overrides the generated image.",
+      "maxLength": 48
     }
   },
   "definitions": {
     "Host": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "voice_id"],
+      "required": [
+        "id",
+        "name",
+        "voice_id"
+      ],
       "properties": {
         "id": {
           "type": "string",
           "minLength": 1,
           "description": "Short identifier referenced by lines (e.g. 'A' or 'B')."
         },
-        "name": { "type": "string", "minLength": 1 },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
         "voice_id": {
           "type": "string",
           "minLength": 1,
@@ -64,51 +94,105 @@
     "Segment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["segment_id", "title", "lines"],
+      "required": [
+        "segment_id",
+        "title",
+        "lines"
+      ],
       "properties": {
-        "segment_id": { "type": "string", "minLength": 1 },
-        "title": { "type": "string", "minLength": 1 },
+        "segment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
         "lines": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/definitions/Line" }
+          "items": {
+            "$ref": "#/definitions/Line"
+          }
         },
         "visuals": {
           "type": "array",
-          "items": { "$ref": "#/definitions/Visual" }
+          "items": {
+            "$ref": "#/definitions/Visual"
+          }
         },
         "overlays": {
           "type": "array",
-          "items": { "$ref": "#/definitions/Overlay" }
+          "items": {
+            "$ref": "#/definitions/Overlay"
+          }
         }
       }
     },
     "Overlay": {
       "type": "object",
-      "required": ["type", "show_at_line", "hide_at_line"],
+      "required": [
+        "type",
+        "show_at_line",
+        "hide_at_line"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "type": "string", "enum": ["bullets", "stat", "chart"] },
-        "show_at_line": { "type": "number", "minimum": 1 },
-        "hide_at_line": { "type": "number", "minimum": 1 },
-        "title": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": [
+            "bullets",
+            "stat",
+            "chart"
+          ]
+        },
+        "show_at_line": {
+          "type": "number",
+          "minimum": 1
+        },
+        "hide_at_line": {
+          "type": "number",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string"
+        },
         "items": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "label": { "type": "string" },
-        "value": { "type": "string" },
-        "subtext": { "type": "string" },
-        "chart_type": { "type": "string" },
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "subtext": {
+          "type": "string"
+        },
+        "chart_type": {
+          "type": "string"
+        },
         "data_points": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["label", "value"],
+            "required": [
+              "label",
+              "value"
+            ],
             "additionalProperties": false,
             "properties": {
-              "label": { "type": "string", "minLength": 1 },
-              "value": { "type": "number" }
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "number"
+              }
             }
           }
         }
@@ -117,15 +201,25 @@
     "Line": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["line_id", "host_id", "text"],
+      "required": [
+        "line_id",
+        "host_id",
+        "text"
+      ],
       "properties": {
-        "line_id": { "type": "string", "minLength": 1 },
+        "line_id": {
+          "type": "string",
+          "minLength": 1
+        },
         "host_id": {
           "type": "string",
           "minLength": 1,
           "description": "Must match one of the hosts[].id values."
         },
-        "text": { "type": "string", "minLength": 1 },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
         "pause_after_ms": {
           "type": "number",
           "minimum": 0,
@@ -143,9 +237,17 @@
     "Visual": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["visual_id", "template", "duration_ms", "data"],
+      "required": [
+        "visual_id",
+        "template",
+        "duration_ms",
+        "data"
+      ],
       "properties": {
-        "visual_id": { "type": "string", "minLength": 1 },
+        "visual_id": {
+          "type": "string",
+          "minLength": 1
+        },
         "template": {
           "type": "string",
           "enum": [
@@ -183,7 +285,10 @@
         },
         "cue_mode": {
           "type": "string",
-          "enum": ["after_speech", "after_pause"],
+          "enum": [
+            "after_speech",
+            "after_pause"
+          ],
           "default": "after_speech",
           "description": "When start_with_line is the END of a line (deprecated start_after_line path), choose whether the visual appears immediately after the speech (after_speech) or after the trailing pause_after_ms silence (after_pause)."
         },
@@ -196,271 +301,509 @@
       "oneOf": [
         {
           "properties": {
-            "template": { "const": "TitleCard" },
-            "data": { "$ref": "#/definitions/TitleCardData" }
+            "template": {
+              "const": "TitleCard"
+            },
+            "data": {
+              "$ref": "#/definitions/TitleCardData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "GrowthCurve" },
-            "data": { "$ref": "#/definitions/GrowthCurveData" }
+            "template": {
+              "const": "GrowthCurve"
+            },
+            "data": {
+              "$ref": "#/definitions/GrowthCurveData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "StatCallout" },
-            "data": { "$ref": "#/definitions/StatCalloutData" }
+            "template": {
+              "const": "StatCallout"
+            },
+            "data": {
+              "$ref": "#/definitions/StatCalloutData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "BookCover" },
-            "data": { "$ref": "#/definitions/BookCoverData" }
+            "template": {
+              "const": "BookCover"
+            },
+            "data": {
+              "$ref": "#/definitions/BookCoverData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "ChapterCard" },
-            "data": { "$ref": "#/definitions/ChapterCardData" }
+            "template": {
+              "const": "ChapterCard"
+            },
+            "data": {
+              "$ref": "#/definitions/ChapterCardData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "FlowDiagram" },
-            "data": { "$ref": "#/definitions/FlowDiagramData" }
+            "template": {
+              "const": "FlowDiagram"
+            },
+            "data": {
+              "$ref": "#/definitions/FlowDiagramData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "SpeakerCard" },
-            "data": { "$ref": "#/definitions/SpeakerCardData" }
+            "template": {
+              "const": "SpeakerCard"
+            },
+            "data": {
+              "$ref": "#/definitions/SpeakerCardData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "PullQuote" },
-            "data": { "$ref": "#/definitions/PullQuoteData" }
+            "template": {
+              "const": "PullQuote"
+            },
+            "data": {
+              "$ref": "#/definitions/PullQuoteData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "KeyTermDefinition" },
-            "data": { "$ref": "#/definitions/KeyTermDefinitionData" }
+            "template": {
+              "const": "KeyTermDefinition"
+            },
+            "data": {
+              "$ref": "#/definitions/KeyTermDefinitionData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "StatAnimation" },
-            "data": { "$ref": "#/definitions/StatAnimationData" }
+            "template": {
+              "const": "StatAnimation"
+            },
+            "data": {
+              "$ref": "#/definitions/StatAnimationData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "ConceptComparison" },
-            "data": { "$ref": "#/definitions/ConceptComparisonData" }
+            "template": {
+              "const": "ConceptComparison"
+            },
+            "data": {
+              "$ref": "#/definitions/ConceptComparisonData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "TimelineVisual" },
-            "data": { "$ref": "#/definitions/TimelineVisualData" }
+            "template": {
+              "const": "TimelineVisual"
+            },
+            "data": {
+              "$ref": "#/definitions/TimelineVisualData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "PhotoCard" },
-            "data": { "$ref": "#/definitions/PhotoCardData" }
+            "template": {
+              "const": "PhotoCard"
+            },
+            "data": {
+              "$ref": "#/definitions/PhotoCardData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "PercentageRing" },
-            "data": { "$ref": "#/definitions/PercentageRingData" }
+            "template": {
+              "const": "PercentageRing"
+            },
+            "data": {
+              "$ref": "#/definitions/PercentageRingData"
+            }
           }
         },
         {
           "properties": {
-            "template": { "const": "SegmentCard" },
-            "data": { "$ref": "#/definitions/SegmentCardData" }
+            "template": {
+              "const": "SegmentCard"
+            },
+            "data": {
+              "$ref": "#/definitions/SegmentCardData"
+            }
           }
         }
       ],
       "anyOf": [
-        { "required": ["start_with_line"] },
-        { "required": ["start_after_line"] }
+        {
+          "required": [
+            "start_with_line"
+          ]
+        },
+        {
+          "required": [
+            "start_after_line"
+          ]
+        }
       ]
     },
     "TitleCardData": {
       "type": "object",
-      "required": ["title"],
+      "required": [
+        "title"
+      ],
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
-        "subtitle": { "type": "string" }
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subtitle": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "GrowthCurveData": {
       "type": "object",
-      "required": ["points"],
+      "required": [
+        "points"
+      ],
       "properties": {
-        "label": { "type": "string" },
+        "label": {
+          "type": "string"
+        },
         "points": {
           "type": "array",
           "minItems": 2,
           "items": {
             "type": "object",
-            "required": ["x", "y"],
+            "required": [
+              "x",
+              "y"
+            ],
             "properties": {
-              "x": { "type": "number" },
-              "y": { "type": "number" }
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
             },
             "additionalProperties": false
           }
         },
-        "x_axis_label": { "type": "string" },
-        "y_axis_label": { "type": "string" }
+        "x_axis_label": {
+          "type": "string"
+        },
+        "y_axis_label": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "StatCalloutData": {
       "type": "object",
-      "required": ["value", "caption"],
+      "required": [
+        "value",
+        "caption"
+      ],
       "properties": {
-        "value": { "type": "number" },
-        "unit": { "type": "string" },
-        "caption": { "type": "string", "minLength": 1 }
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "BookCoverData": {
       "type": "object",
-      "required": ["title", "author"],
+      "required": [
+        "title",
+        "author"
+      ],
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
-        "author": { "type": "string", "minLength": 1 }
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "ChapterCardData": {
       "type": "object",
-      "required": ["chapter_num", "chapter_title"],
+      "required": [
+        "chapter_num",
+        "chapter_title"
+      ],
       "properties": {
-        "chapter_num": { "type": "number" },
-        "chapter_title": { "type": "string", "minLength": 1 }
+        "chapter_num": {
+          "type": "number"
+        },
+        "chapter_title": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "FlowDiagramData": {
       "type": "object",
-      "required": ["steps"],
+      "required": [
+        "steps"
+      ],
       "properties": {
-        "title": { "type": "string" },
+        "title": {
+          "type": "string"
+        },
         "steps": {
           "type": "array",
           "minItems": 2,
           "maxItems": 8,
           "items": {
             "type": "object",
-            "required": ["label"],
+            "required": [
+              "label"
+            ],
             "properties": {
-              "label": { "type": "string", "minLength": 1 },
-              "description": { "type": "string" }
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string"
+              }
             },
             "additionalProperties": false
           }
         },
-        "active_step": { "type": "number" },
-        "theme": { "type": "string", "enum": ["light", "dark"] }
+        "active_step": {
+          "type": "number"
+        },
+        "theme": {
+          "type": "string",
+          "enum": [
+            "light",
+            "dark"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "SpeakerCardData": {
       "type": "object",
-      "required": ["host_name", "host_role", "color"],
+      "required": [
+        "host_name",
+        "host_role",
+        "color"
+      ],
       "properties": {
-        "host_name": { "type": "string", "minLength": 1 },
-        "host_role": { "type": "string", "enum": ["primary", "secondary"] },
-        "color": { "type": "string", "minLength": 1 },
-        "show_waveform": { "type": "boolean" }
+        "host_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host_role": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "secondary"
+          ]
+        },
+        "color": {
+          "type": "string",
+          "minLength": 1
+        },
+        "show_waveform": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "PullQuoteData": {
       "type": "object",
-      "required": ["quote"],
+      "required": [
+        "quote"
+      ],
       "properties": {
-        "quote": { "type": "string", "minLength": 1, "maxLength": 240 },
-        "speaker": { "type": "string" },
-        "theme": { "type": "string", "enum": ["light", "dark"] }
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "speaker": {
+          "type": "string"
+        },
+        "theme": {
+          "type": "string",
+          "enum": [
+            "light",
+            "dark"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "KeyTermDefinitionData": {
       "type": "object",
-      "required": ["term", "definition"],
+      "required": [
+        "term",
+        "definition"
+      ],
       "properties": {
-        "term": { "type": "string", "minLength": 1 },
-        "definition": { "type": "string", "minLength": 1 },
-        "etymology": { "type": "string" },
-        "category": { "type": "string" }
+        "term": {
+          "type": "string",
+          "minLength": 1
+        },
+        "definition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "etymology": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "StatAnimationData": {
       "type": "object",
-      "required": ["value", "caption"],
+      "required": [
+        "value",
+        "caption"
+      ],
       "properties": {
-        "value": { "type": "number" },
-        "unit": { "type": "string" },
-        "prefix": { "type": "string" },
-        "caption": { "type": "string", "minLength": 1 },
-        "source": { "type": "string" },
-        "animate_type": { "type": "string", "enum": ["counter", "ring"] }
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string"
+        },
+        "animate_type": {
+          "type": "string",
+          "enum": [
+            "counter",
+            "ring"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "ConceptComparisonData": {
       "type": "object",
-      "required": ["left", "right"],
+      "required": [
+        "left",
+        "right"
+      ],
       "properties": {
-        "title": { "type": "string" },
-        "left": { "$ref": "#/definitions/ComparisonColumn" },
-        "right": { "$ref": "#/definitions/ComparisonColumn" },
-        "left_color": { "type": "string" },
-        "right_color": { "type": "string" }
+        "title": {
+          "type": "string"
+        },
+        "left": {
+          "$ref": "#/definitions/ComparisonColumn"
+        },
+        "right": {
+          "$ref": "#/definitions/ComparisonColumn"
+        },
+        "left_color": {
+          "type": "string"
+        },
+        "right_color": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "ComparisonColumn": {
       "type": "object",
-      "required": ["label", "points"],
+      "required": [
+        "label",
+        "points"
+      ],
       "properties": {
-        "label": { "type": "string", "minLength": 1 },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
         "points": {
           "type": "array",
           "minItems": 1,
           "maxItems": 6,
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "additionalProperties": false
     },
     "TimelineVisualData": {
       "type": "object",
-      "required": ["events"],
+      "required": [
+        "events"
+      ],
       "properties": {
-        "title": { "type": "string" },
+        "title": {
+          "type": "string"
+        },
         "events": {
           "type": "array",
           "minItems": 2,
           "maxItems": 6,
           "items": {
             "type": "object",
-            "required": ["year", "label"],
+            "required": [
+              "year",
+              "label"
+            ],
             "properties": {
-              "year": { "type": "string", "minLength": 1 },
-              "label": { "type": "string", "minLength": 1 },
-              "description": { "type": "string" }
+              "year": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string"
+              }
             },
             "additionalProperties": false
           }
@@ -470,42 +813,106 @@
     },
     "PhotoCardData": {
       "type": "object",
-      "required": ["photo_url"],
+      "required": [
+        "photo_url"
+      ],
       "properties": {
-        "photo_url": { "type": "string", "minLength": 1 },
-        "caption": { "type": "string" },
-        "photographer": { "type": "string" },
-        "overlay_opacity": { "type": "number", "minimum": 0, "maximum": 1 }
+        "photo_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "caption": {
+          "type": "string"
+        },
+        "photographer": {
+          "type": "string"
+        },
+        "overlay_opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
       },
       "additionalProperties": false
     },
     "PercentageRingData": {
       "type": "object",
-      "required": ["percentage", "label"],
+      "required": [
+        "percentage",
+        "label"
+      ],
       "properties": {
-        "percentage": { "type": "number", "minimum": 0, "maximum": 100 },
-        "label": { "type": "string", "minLength": 1 },
-        "color": { "type": "string" },
-        "show_remaining": { "type": "boolean" }
+        "percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "color": {
+          "type": "string"
+        },
+        "show_remaining": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "SegmentCardData": {
       "type": "object",
-      "required": ["title", "bullets", "host_a_name", "host_b_name", "host_a_color", "host_b_color", "current_speaker"],
+      "required": [
+        "title",
+        "bullets",
+        "host_a_name",
+        "host_b_name",
+        "host_a_color",
+        "host_b_color",
+        "current_speaker"
+      ],
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
         "bullets": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "photo_url": { "type": "string" },
-        "host_a_name": { "type": "string", "minLength": 1 },
-        "host_b_name": { "type": "string", "minLength": 1 },
-        "host_a_color": { "type": "string", "minLength": 1 },
-        "host_b_color": { "type": "string", "minLength": 1 },
-        "current_speaker": { "type": "string", "enum": ["A", "B", "both"] },
-        "segment_number": { "type": "number" }
+        "photo_url": {
+          "type": "string"
+        },
+        "host_a_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host_b_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host_a_color": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host_b_color": {
+          "type": "string",
+          "minLength": 1
+        },
+        "current_speaker": {
+          "type": "string",
+          "enum": [
+            "A",
+            "B",
+            "both"
+          ]
+        },
+        "segment_number": {
+          "type": "number"
+        }
       },
       "additionalProperties": false
     }

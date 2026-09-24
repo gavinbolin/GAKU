@@ -69,12 +69,21 @@ def _try_youtube_upload(
         )
         tags = (episode or {}).get("keywords") or ["podcast", "education", "gaku"]
         privacy = os.environ.get("GAKU_YT_PRIVACY", "private")
+        # Prefer episode folder for thumbnail.png override / hybrid gen.
+        episode_dir = None
+        if run_dir is not None:
+            episode_dir = Path(run_dir)
+        elif mp4_path.parent.name and (mp4_path.parent / "episode.json").exists():
+            episode_dir = mp4_path.parent
+
         result = yt.upload_video(
             str(mp4_path),
             title=str(topic)[:100],
             description=description,
             tags=tags,
             privacy_status=privacy,
+            episode_dir=str(episode_dir) if episode_dir else None,
+            episode=episode,
         )
         out = {**result, "uploaded_at": datetime.datetime.utcnow().isoformat() + "Z"}
         dest = run_dir or mp4_path.parent

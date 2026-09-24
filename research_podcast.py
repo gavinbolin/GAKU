@@ -209,6 +209,12 @@ def main() -> int:
         help="Optional YouTube title override (max 100 chars).",
     )
     parser.add_argument(
+        "--series",
+        default=None,
+        help="YouTube series key from config/playlist_series.json (e.g. hbr). "
+             "Auto-detected from HBR paths/metadata when omitted.",
+    )
+    parser.add_argument(
         "--source",
         default=None,
         help="Primary-source text/markdown for fact-check (HBR / framework listens). "
@@ -349,7 +355,18 @@ def main() -> int:
             print(f"[podcast] warning: could not patch host personas: {exc}", file=sys.stderr)
 
 
+        # Stamp series metadata early (HBR paths / --series / episode field) so
+        # --no-upload runs still persist series on episode.json.
+        _resolve_and_stamp_series(
+            episode,
+            explicit_series=getattr(args, "series", None),
+            run_dir=out_dir,
+            research_md=Path(args.research_md).resolve() if args.research_md else None,
+            source_path=Path(args.source).resolve() if args.source else None,
+        )
+
         # Fact-check against primary source when available (HBR / framework listens).
+
         # Same class as Enterprise factcheck_report.json — durable for Most AI etc.
         if not getattr(args, "skip_factcheck", False):
             try:
@@ -481,10 +498,20 @@ def main() -> int:
 
         # --- YouTube upload ---
         if final_video_path and final_video_path.exists() and not args.no_upload:
+            source_for_series = Path(args.source).resolve() if getattr(args, "source", None) else None
+            research_for_series = Path(args.research_md).resolve() if getattr(args, "research_md", None) else None
+            series_key = _resolve_and_stamp_series(
+                episode,
+                explicit_series=getattr(args, "series", None),
+                run_dir=out_dir,
+                research_md=research_for_series,
+                source_path=source_for_series,
+            )
             _try_youtube_upload(
                 out_dir, episode, final_video_path,
                 privacy_status=args.upload_privacy,
                 title_override=args.yt_title,
+                series=series_key,
             )
 
         final_audio_path = final_mp3 if mp3_ok else final_wav
@@ -680,6 +707,51 @@ def _voice_display_names(episode: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+
+def _resolve_and_stamp_series(
+    episode: dict[str, Any],
+    *,
+    explicit_series: str | None,
+    run_dir: Path,
+    research_md: Path | None = None,
+    source_path: Path | None = None,
+) -> str | None:
+    """Detect series_key, stamp episode["series"], persist episode.json when changed."""
+    if str(REPO_ROOT / "podcast-pipeline") not in sys.path:
+        # youtube_playlists.py lives beside this file
+        sys.path.insert(0, str(ROOT))
+    try:
+        import youtube_playlists as ytpl
+    except ImportError:
+        print("[youtube] youtube_playlists not importable; skipping series stamp", file=sys.stderr)
+        return (explicit_series or episode.get("series") or None)
+
+    series_key = ytpl.detect_series(
+        explicit=explicit_series,
+        episode=episode,
+        run_dir=run_dir,
+        research_md=research_md,
+        source_path=source_path,
+        topic=episode.get("topic"),
+        tags=episode.get("keywords") or episode.get("tags"),
+    )
+    if not series_key:
+        return None
+    if episode.get("series") != series_key:
+        episode["series"] = series_key
+        ep_path = run_dir / "episode.json"
+        try:
+            if True:  # always persist series stamp when resolved
+                ep_path.write_text(
+                    json.dumps(episode, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                print(f"[podcast] series={series_key} stamped on {ep_path.name}", file=sys.stderr)
+        except OSError as exc:
+            print(f"[podcast] warning: could not stamp series on episode.json: {exc}", file=sys.stderr)
+    return series_key
+
+
 def _try_youtube_upload(
     run_dir: Path,
     episode: dict[str, Any],
@@ -687,10 +759,15 @@ def _try_youtube_upload(
     *,
     privacy_status: str = "private",
     title_override: str | None = None,
+    series: str | None = None,
 ) -> None:
     """Upload the rendered podcast.mp4 to YouTube. Skips gracefully if
     credentials aren't present; logs and swallows errors so a failed upload
-    never breaks the pipeline (the MP4 is still on disk)."""
+    never breaks the pipeline (the MP4 is still on disk).
+
+    series: optional series_key (e.g. hbr). When set (or present on episode),
+    youtube_upload formats the title and adds the video to the series playlist.
+    """
     client_secrets = REPO_ROOT / "youtube_client_secrets.json"
     if not client_secrets.exists():
         print("[youtube] skipping upload — youtube_client_secrets.json not found")
@@ -703,6 +780,8 @@ def _try_youtube_upload(
     prev_cwd = os.getcwd()
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     try:
         os.chdir(REPO_ROOT)
         import youtube_upload as yt
@@ -718,14 +797,22 @@ def _try_youtube_upload(
         )
         tags = episode.get("keywords", []) or ["podcast", "education", "ai", "langchain"]
         title = (title_override or topic)[:100]
+        series_key = (series or episode.get("series") or None)
+        if isinstance(series_key, str):
+            series_key = series_key.strip().lower() or None
         result = yt.upload_video(
             str(mp4_path),
             title=title,
             description=description,
             tags=tags,
             privacy_status=privacy_status,
+            series=series_key,
+            episode_dir=str(run_dir) if run_dir else None,
+            episode=episode,
         )
         out = {**result, "uploaded_at": datetime.datetime.utcnow().isoformat()}
+        if series_key:
+            out.setdefault("series", series_key)
         (run_dir / "youtube.json").write_text(json.dumps(out, indent=2))
     except Exception as e:
         print(f"[youtube] upload failed: {e}")

@@ -1,0 +1,13 @@
+{
+  "title_pattern": "Insert ' | {TAG}' before ' | PROJECT GAKU' when present; else append ' | {TAG}'. Skip if title already has the series tag (as '| TAG', '(TAG)', or standalone word). Example: 'Most AI Initiatives Fail | HBR | PROJECT GAKU'.",
+  "thumbnail_note": "Hybrid default: one-hook Impact line on cinematic dark starfield plate (see docs/youtube-thumbnails.md). Episode-folder thumbnail.png overrides. Optional later: small corner series badge only when it does not fight the hook; not applied automatically.",
+  "series": {
+    "hbr": {
+      "youtube_playlist_id": "PLbKsqcBR8ND0",
+      "title": "Harvard Business Review — Gaku",
+      "description": "PROJECT GAKU study listens on Harvard Business Review articles — frameworks and strategy for UVU TECH 6750 and practitioners. AI-generated voices and visuals (disclosed on each video).",
+      "title_tag": "HBR",
+      "privacy_status": "public"
+    }
+  }
+}
