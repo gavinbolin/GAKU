@@ -164,8 +164,10 @@ _LEADING_FILLER_RE = re.compile(
     r"^(?:"
     r"yeah[,!.]?|yep[,!.]?|right[,!.]?|okay[,!.]?|ok[,!.]?|"
     r"oh[,!.]?|well[,!.]?|so[,!.]?|um[,!.]?|uh[,!.]?|"
+    r"wow[,!.]?|exactly[,!.]?|precisely[,!.]?|indeed[,!.]?|truly[,!.]?|"
     r"actually[,!.]?|basically[,!.]?|literally[,!.]?|"
-    r"you know[,!.]?|i mean[,!.]?"
+    r"you know[,!.]?|i mean[,!.]?|"
+    r"that'?s a great (?:point|question|catch)[,!.]?"
     r")\s+",
     re.IGNORECASE,
 )
@@ -191,6 +193,18 @@ def _load_clip_durations(clip_durations: Any) -> dict[str, int]:
     if isinstance(clip_durations, dict):
         return {str(k): int(v) for k, v in clip_durations.items()}
     return {}
+
+
+_PART_TITLE_RE = re.compile(r"\s*\(part\s*\d+(?:\s*/\s*\d+)?\)\s*", re.IGNORECASE)
+
+
+def _clean_segment_title(title: str) -> str:
+    cleaned = title or ""
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = _PART_TITLE_RE.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" -–—") or (title or "Segment")
 
 
 def compute_segment_timings(
@@ -676,8 +690,18 @@ def group_into_sentences(word_timings: list[dict[str, Any]]) -> list[dict[str, A
     return sentences
 
 
+def _strip_caption_markdown(text: str) -> str:
+    cleaned = text or ""
+    cleaned = cleaned.replace("`", "")
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
+    cleaned = re.sub(r"_([^_]+)_", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _strip_fillers(text: str) -> str:
-    cleaned = text
+    cleaned = _strip_caption_markdown(text)
     # Strip leading discourse markers — possibly several in a row.
     for _ in range(3):
         new = _LEADING_FILLER_RE.sub("", cleaned, count=1)
@@ -774,6 +798,55 @@ def _current_speaker(segment: dict[str, Any]) -> str:
     return "both"
 
 
+
+_FIVE_RS = ("Roles", "Responsibilities", "Rituals", "Resources", "Results")
+_STAT_NUM_RE = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})*(?:\.\d+)?%?|\d+%)")
+
+
+def _segment_dialogue_blob(segment: dict[str, Any]) -> str:
+    parts = []
+    for ln in segment.get("lines") or []:
+        parts.append(ln.get("text") or "")
+    return " ".join(parts)
+
+
+def _stat_value_grounded(value: str, segment_text: str) -> bool:
+    """True if every numeric token in the overlay value appears in segment dialogue."""
+    raw = (value or "").strip()
+    if not raw:
+        return False
+    nums = _STAT_NUM_RE.findall(raw)
+    if not nums:
+        # Non-numeric stat string (e.g. qualitative) — allow
+        return True
+    blob = (segment_text or "").lower().replace(",", "")
+    for tok in nums:
+        n = tok.lower().replace(",", "")
+        if n in blob or n.rstrip("%") in blob:
+            continue
+        if n.endswith("%") and (n[:-1] + " percent") in blob:
+            continue
+        return False
+    return True
+
+
+def _complete_framework_items(title: str, items: list[str]) -> list[str]:
+    """If this looks like a 5Rs card, ensure all five Rs are present."""
+    out = [str(x).strip() for x in (items or []) if str(x).strip()]
+    blob = f"{title or ''} " + " ".join(out)
+    looks_five = bool(re.search(r"\b5\s*R|five\s*R|5Rs\b", blob, re.I))
+    hit = sum(1 for r in _FIVE_RS if re.search(rf"\b{re.escape(r)}\b", blob, re.I))
+    if not (looks_five or hit >= 2):
+        return out
+    # Preserve existing wording; append any missing R as a plain label.
+    lower_blob = " ".join(out).lower()
+    for r in _FIVE_RS:
+        if r.lower() not in lower_blob:
+            out.append(r)
+            lower_blob = " ".join(out).lower()
+    return out
+
+
 def _build_overlay_entries(
     segment: dict[str, Any],
     durations: dict[str, int],
@@ -792,6 +865,7 @@ def _build_overlay_entries(
     we drop it.
     """
     overlays_in = segment.get("overlays") or []
+    segment_text = _segment_dialogue_blob(segment)
     if not overlays_in:
         return []
 
@@ -857,7 +931,10 @@ def _build_overlay_entries(
             entry["title"] = str(ov.get("title") or "")
             items = ov.get("items") or []
             if isinstance(items, list):
-                entry["items"] = [str(x) for x in items if x]
+                entry["items"] = _complete_framework_items(
+                    str(entry.get("title") or ov.get("title") or ""),
+                    [str(x) for x in items if x],
+                )
             else:
                 entry["items"] = []
         elif t == "stat":
@@ -882,6 +959,10 @@ def _build_overlay_entries(
                     except (TypeError, ValueError):
                         continue
             entry["data_points"] = cleaned_dps
+
+        # Drop invented / ungrounded stat overlays (approved): digits must appear in dialogue.
+        if entry.get("type") == "stat" and not _stat_value_grounded(str(entry.get("value") or ""), segment_text):
+            continue
         out.append(entry)
     return out
 
@@ -895,6 +976,24 @@ def _host_names(episode: dict[str, Any]) -> tuple[str, str]:
         elif h.get("id") == "B" and h.get("name"):
             b_name = h["name"]
     return a_name, b_name
+
+
+_VAGUE_PEXELS = re.compile(
+    # Ban lone fluff nouns (approved daily-loop): empty/team/office/project/data/etc.
+    r"^(?:ai|a\.i\.?|artificial intelligence|tech|technology|future|business|innovation|digital|"
+    r"empty|team|office|project|data|people|work|meeting|corporate|abstract)"
+    r"(?:\s+(?:for|and|in|of|the|ai|tech))?$",
+    re.IGNORECASE,
+)
+
+
+def _ground_pexels_query(query: str, fallback: str = "office collaboration meeting") -> str:
+    q = (query or "").strip()
+    q = re.sub(r"\s+", " ", q)
+    if (not q) or _VAGUE_PEXELS.match(q) or q.lower() in {"ai", "ai for", "artificial intelligence", "empty", "team", "office", "project", "data", "people", "work", "meeting"}:
+        return fallback
+    q2 = re.sub(r"^(?:ai|artificial intelligence)\s+", "", q, flags=re.IGNORECASE).strip()
+    return q2 or fallback
 
 
 def fetch_pexels_photo(
@@ -968,7 +1067,7 @@ def fetch_pexels_photo(
 # Target window length (ms) for one Gemini-chosen background image. ~25s is
 # long enough for a coherent topic but short enough that the visuals keep
 # moving with the conversation.
-GRAPHICS_WINDOW_MS = 25_000
+GRAPHICS_WINDOW_MS = 12_000  # approved B-roll ~10-15s
 
 
 def build_graphics_manifest(
@@ -1027,7 +1126,7 @@ def build_graphics_manifest(
             continue
         if not isinstance(resp, dict):
             continue
-        query = (resp.get("query") or "").strip()
+        query = _ground_pexels_query((resp.get("query") or "").strip(), fallback="team workshop whiteboard")
         if not query or resp.get("gemini_failed"):
             print(
                 f"[graphics] window {idx}: no query ({resp.get('warning') or 'empty'})",
@@ -1131,14 +1230,14 @@ def build_visual_manifest(
     # 2. One SegmentCard per segment.
     segments = episode.get("segments") or []
     for i, (seg, timing) in enumerate(zip(segments, seg_timings), 1):
-        seg_title = (seg.get("title") or f"Segment {i}").strip()
+        seg_title = _clean_segment_title((seg.get("title") or f"Segment {i}").strip())
         bullets = _extract_bullets(seg)
         speaker = _current_speaker(seg)
         seg_idx = i - 1
 
         photo_url = None
         if pexels_key:
-            query = f"{seg_title} {topic}".strip()
+            query = _ground_pexels_query(f"{seg_title}".strip(), fallback="enterprise team planning session")
             photo = fetch_pexels_photo(query, "landscape", pexels_key=pexels_key, run_dir=run_dir)
             if photo:
                 photo_url = photo["url"]

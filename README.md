@@ -77,9 +77,10 @@ The pipeline assumes a [Kokoro FastAPI server](https://github.com/remsky/Kokoro-
 running on `http://localhost:8880`. Quickest path is the Docker image:
 
 ```bash
-docker run -d --name kokoro -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
-# or, for GPU:
 docker run -d --name kokoro --gpus all -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-gpu:latest
+# CPU only if you must (slow). Prefer start_kokoro_and_remotion.bat which requires GPU
+# unless KOKORO_ALLOW_CPU=1:
+# docker run -d --name kokoro -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
 ```
 
 Sanity check: `curl http://localhost:8880/v1/audio/voices` should list voices
@@ -160,3 +161,7 @@ These are the wired-up-but-not-finished pieces. Ordered by what will bite first.
       it up in your orchestrator using `prompts/gemini-script-gen.md` as the
       system prompt and the schema as the response constraint.
 ```
+
+## Approved Gaku improvements (2026-09)
+
+Daily-loop items folded into prompts + `visual_queue.py` + Remotion overlays + `factcheck_episode.py` (HBR / framework listens). See `prompts/gemini-script-gen.md` section `APPROVED_GAKU_IMPROVEMENTS_2026_09`.

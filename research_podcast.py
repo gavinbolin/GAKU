@@ -208,6 +208,17 @@ def main() -> int:
         default=None,
         help="Optional YouTube title override (max 100 chars).",
     )
+    parser.add_argument(
+        "--source",
+        default=None,
+        help="Primary-source text/markdown for fact-check (HBR / framework listens). "
+             "Also auto-detects hbr_source.md / *_source.txt in the run dir.",
+    )
+    parser.add_argument(
+        "--skip-factcheck",
+        action="store_true",
+        help="Skip the primary-source fact-check step even when a source file is present.",
+    )
     args = parser.parse_args()
 
     # Resolve voices. If either side wasn't pinned on the CLI, pick a random
@@ -336,6 +347,34 @@ def main() -> int:
                 ep_path.write_text(json.dumps(episode, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception as exc:
             print(f"[podcast] warning: could not patch host personas: {exc}", file=sys.stderr)
+
+
+        # Fact-check against primary source when available (HBR / framework listens).
+        # Same class as Enterprise factcheck_report.json — durable for Most AI etc.
+        if not getattr(args, "skip_factcheck", False):
+            try:
+                from factcheck_episode import fact_check_episode, find_source_text
+                source_text = find_source_text(out_dir, getattr(args, "source", None))
+                if source_text:
+                    print("[podcast] fact-checking episode against primary source…", file=sys.stderr)
+                    episode, fc_report = fact_check_episode(
+                        episode, source_text, out_dir=out_dir, use_gemini=True
+                    )
+                    summary = (fc_report or {}).get("summary") or {}
+                    print(
+                        f"[podcast] factcheck done: unsupported={summary.get('unsupported')} "
+                        f"rewritten={summary.get('rewritten')} "
+                        f"(wrote factcheck_report.json)",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "[podcast] no primary source file for fact-check "
+                        "(hbr_source.md / *_source.txt / --source); skipping",
+                        file=sys.stderr,
+                    )
+            except Exception as exc:
+                print(f"[podcast] warning: fact-check step failed: {exc!r}", file=sys.stderr)
 
         segments = episode.get("segments") or []
         line_count = sum(len(s.get("lines") or []) for s in segments)

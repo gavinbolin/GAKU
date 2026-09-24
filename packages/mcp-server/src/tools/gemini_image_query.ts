@@ -15,7 +15,7 @@ export interface GeminiImageQueryResult {
   warning?: string;
 }
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 const API_KEYS: string[] = [
   process.env.GEMINI_API_KEY,
@@ -27,9 +27,9 @@ let currentKeyIndex = 0;
 function isRateLimitError(err: unknown): boolean {
   const e = err as { status?: number; message?: string } | null;
   if (!e) return false;
-  if (e.status === 429) return true;
+  if (e.status === 429 || e.status === 503) return true;
   const msg = e.message || String(err);
-  return msg.includes("429") || msg.includes("quota") || msg.includes("Too Many Requests");
+  return msg.includes("429") || msg.includes("503") || msg.includes("high demand") || msg.includes("quota") || msg.includes("Too Many Requests");
 }
 
 async function callGeminiWithRotation(
@@ -84,7 +84,10 @@ export async function geminiImageQuery(
   const systemPrompt =
     "You are helping illustrate a podcast. Given a short excerpt, " +
     "you reply with ONLY a single Pexels image search query — 2 to 4 " +
-    "concrete, visual words. No punctuation, no quotes, no explanation.";
+    "concrete, visual, article-grounded nouns (people, places, artifacts). " +
+    "Never reply with vague queries like AI, AI for, technology, future, " +
+    "or single words empty/team/office/project/data/business alone. " +
+    "No punctuation, no quotes, no explanation.";
 
   const userMessage =
     `Here is a 25-second excerpt:\n"${excerpt}"\n\n` +

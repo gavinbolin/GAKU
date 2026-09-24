@@ -603,10 +603,8 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
               });
               scale = interpolate(popSpring, [0, 1], [1, 1.14]);
             }
-          } else if (w.end_ms < currentMs || held) {
-            color = "#E8E4F5";
-            fontWeight = 700;
           } else {
+            // Current-word-only karaoke (approved): no accumulated past-word highlight.
             color = "#F5F0E8";
             fontWeight = 600;
             textShadow = "0 2px 12px rgba(0,0,0,0.95)";

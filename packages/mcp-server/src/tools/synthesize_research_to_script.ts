@@ -36,7 +36,14 @@ export interface SynthesizeResult {
   warning?: string;
 }
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const MODEL_FALLBACKS = [
+  MODEL,
+  "gemini-3.5-flash",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-3-flash-preview",
+].filter((v, i, a) => v && a.indexOf(v) === i);
 const DEFAULT_DURATION_MIN = 8;
 const DEFAULT_VOICE_A = "af_bella";
 const DEFAULT_VOICE_B = "am_michael";
@@ -92,9 +99,15 @@ const DIALOGUE_STYLE_RULES = [
   "  host first name. No So Alex / Well Sam / Thanks Jordan / Absolutely, Alex.",
   "  Spoken text must work if the listener never learns the hosts names.",
   "- hosts[].name is metadata only and must never appear in any line text.",
-  "- Ban filler: precisely (especially as a one-word reply), delve,",
-  "  it's important to note, in this episode we'll dive.",
+  "- Ban filler openers/tics: Wow, Exactly, Precisely, Indeed, Truly,",
+  "  That is a great point/question, delve, it's important to note,",
+  "  in this episode we'll dive. No one-word replies like Precisely. / Indeed.",
   "  Vary acknowledgements; do not lean on one tic.",
+  "- Soft-cap each spoken line ~12-14s (~30-36 words); split long chapter openers.",
+  "- Never invent unsourced failure % (e.g. 70% of AI pilots fail) or other",
+  "  stats absent from RESEARCH_NOTES / primary source. Prefer qualitative wording.",
+  "- On-screen stat digits must match spoken digits exactly.",
+  "- Multi-item framework cards (e.g. five Rs) must include EVERY item (incl. Results).",
 ].join("\n");
 
 // Anything at or above this requests-per-segment chunking.
@@ -123,39 +136,46 @@ let currentKeyIndex = 0;
 function isRateLimitError(err: unknown): boolean {
   const e = err as { status?: number; message?: string } | null;
   if (!e) return false;
-  if (e.status === 429) return true;
+  if (e.status === 429 || e.status === 503) return true;
   const msg = e.message || String(err);
-  return msg.includes("429") || msg.includes("quota") || msg.includes("Too Many Requests");
+  return msg.includes("429") || msg.includes("503") || msg.includes("high demand") || msg.includes("quota") || msg.includes("Too Many Requests") || msg.includes("Service Unavailable");
 }
 
 async function callGeminiWithRotation(
-  buildModel: (client: GoogleGenerativeAI) => GenerativeModel,
+  buildModel: (client: GoogleGenerativeAI, modelName: string) => GenerativeModel,
   userMessage: string
 ): Promise<GenerateContentResult> {
   if (API_KEYS.length === 0) {
     throw new Error("No Gemini API keys configured (GEMINI_API_KEY[_2,_3])");
   }
-  let rotations = 0;
-  while (rotations < API_KEYS.length) {
-    const client = new GoogleGenerativeAI(API_KEYS[currentKeyIndex]);
-    const model = buildModel(client);
-    try {
-      return await model.generateContent(userMessage);
-    } catch (err) {
-      if (!isRateLimitError(err)) throw err;
-      const prevIdx = currentKeyIndex;
-      currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-      rotations++;
-      log(
-        `429/quota on key #${prevIdx + 1}, rotating to key #${currentKeyIndex + 1} ` +
-          `(rotation ${rotations}/${API_KEYS.length})`
-      );
-      if (rotations >= API_KEYS.length) {
-        throw new Error(`All ${API_KEYS.length} Gemini API keys exhausted (429): ${(err as Error).message}`);
+  let lastErr: unknown = null;
+  for (const modelName of MODEL_FALLBACKS) {
+    for (let rotations = 0; rotations < API_KEYS.length; rotations++) {
+      const client = new GoogleGenerativeAI(API_KEYS[currentKeyIndex]);
+      const model = buildModel(client, modelName);
+      try {
+        const result = await model.generateContent(userMessage);
+        if (modelName !== MODEL) log(`using fallback model ${modelName}`);
+        return result;
+      } catch (err) {
+        lastErr = err;
+        const msg = (err as Error).message || String(err);
+        if (!isRateLimitError(err) && !msg.includes("404") && !msg.includes("not found")) {
+          throw err;
+        }
+        const prevIdx = currentKeyIndex;
+        currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+        log(
+          `model=${modelName} key#${prevIdx + 1} failed (${msg.slice(0, 120)}); ` +
+            `rotating to key#${currentKeyIndex + 1}`
+        );
+        await new Promise((r) => setTimeout(r, 2000));
       }
     }
   }
-  throw new Error("Gemini key rotation loop exited unexpectedly");
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(`All Gemini models/keys exhausted: ${String(lastErr)}`);
 }
 
 function resolvePromptPath(): string {
@@ -299,9 +319,9 @@ async function generateSingle(
   userMessage: string,
   duration: number
 ): Promise<{ episode: Record<string, unknown> | null; raw: string; warning?: string }> {
-  const buildModel = (client: GoogleGenerativeAI) =>
+  const buildModel = (client: GoogleGenerativeAI, modelName: string) =>
     client.getGenerativeModel({
-      model: MODEL,
+      model: modelName,
       systemInstruction: systemPrompt,
       generationConfig: {
         maxOutputTokens: maxOutputTokensFor(duration),
@@ -392,7 +412,9 @@ function outlinePrompt(): string {
     "  (used as the prompt for the dialogue-writing call). Make it concrete.",
     "- Apply TONE, AUDIENCE_LEVEL, and FOCUS when choosing what each segment covers.",
     "- Hosts never name each other in later dialogue: do not write intents like Alex explains. Refer to Host A / Host B only.",
-    "- Ban filler words (precisely, delve, it's important to note) in any sample copy.",
+    "- Ban filler words (Wow, Exactly, Precisely, That is a great..., delve, its important to note) in any sample copy.",
+    "- Soft-cap each spoken line to ~12-14s (~30-36 words); split longer explanations.",
+    "- Segment titles are plain - never append (part N) or (part N/M).",
   ].join("\n");
 }
 
@@ -428,7 +450,14 @@ function segmentPrompt(hostA: { name: string; voice_id: string }, hostB: { name:
     "}",
     "",
     "Rules:",
-    "- Produce roughly `target_lines` total lines (±20% OK). Lines avg ~25 words.",
+    "- Produce roughly `target_lines` total lines (±20% OK). Soft-cap each line ~30-36 words (~12-14s).",
+    "- Prefer richer overlays (stat/chart/diagram) over empty default cards - visual-heavy bias.",
+    "- No invented unsourced stats (no 70% pilots-fail unless in RESEARCH_NOTES).",
+    "- Stat overlay digits must match the spoken line digits exactly.",
+    "- Framework bullet lists (five Rs etc.) must include ALL items (incl. Results).",
+    "- TitleCards need a real subtitle; prefer ChapterCard/stat/diagram mid-episode.",
+    "- Ban Indeed/Truly/Wow/Exactly/Precisely as line openers or one-word replies.",
+    "- Never put (part N) suffixes in titles or visual titles.",
     "- `line_id` MUST start with the segment_id followed by `_lNN` (zero-padded).",
     "- `host_id` is exactly \"A\" or \"B\".",
     "- `pause_after_ms` is 150-400 normally, 600-1000 at a topic shift.",
@@ -452,9 +481,9 @@ async function generateOutline(
   userContext: string,
   duration: number
 ): Promise<{ outline: OutlineResponse | null; raw: string; warning?: string }> {
-  const buildModel = (client: GoogleGenerativeAI) =>
+  const buildModel = (client: GoogleGenerativeAI, modelName: string) =>
     client.getGenerativeModel({
-      model: MODEL,
+      model: modelName,
       systemInstruction: outlinePrompt(),
       generationConfig: {
         maxOutputTokens: 8192,
@@ -579,9 +608,9 @@ async function generateChunked(
 
   const hostA = { name: voiceDisplayName(voiceA), voice_id: voiceA };
   const hostB = { name: voiceDisplayName(voiceB), voice_id: voiceB };
-  const buildSegmentModel = (client: GoogleGenerativeAI) =>
+  const buildSegmentModel = (client: GoogleGenerativeAI, modelName: string) =>
     client.getGenerativeModel({
-      model: MODEL,
+      model: modelName,
       systemInstruction: segmentPrompt(hostA, hostB),
       generationConfig: {
         maxOutputTokens: 16384,

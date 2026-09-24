@@ -33,7 +33,17 @@ The show always has the same two hosts. Their voices and roles are fixed:
   - Acknowledges uncertainty when the source material is uncertain.
   - Hands the mic back to Host A with hooks ("...and that's where it gets weird").
 
-Roughly **50/50 line count**. If you find yourself writing four B lines in a row,
+Roughly **50/50 line count**.
+
+### How the hosts talk (hard rules)
+
+- **Never name the other host.** Do not say Alex, Sam, Jordan, or any host/character first name in spoken `text`. Forbidden patterns: "So Alex...", "Well Sam...", "Thanks Jordan", "Absolutely, Alex." Hosts never address each other by name. The conversation must work if the listener never learns anyone's name.
+- **`hosts[].name` is metadata only** (on-screen labels). It must never appear in any line's `text`.
+- **No name-dropping in the close.** Sign off on the idea, not "Thanks, Sam."
+- **Ban overused AI filler.** Do not use: "precisely"/"exactly"/"indeed"/"truly"/"wow" (especially one-word replies), "delve" / "delve into", "it's important to note", "in this episode we'll dive". Vary acknowledgements ("right", "yeah", "that's the bit", "ok so") and never lean on one tic.
+- Prefer concrete verbs and short spoken sentences over academic throat-clearing.
+
+If you find yourself writing four B lines in a row,
 break them up with a real reaction or question from A.
 
 ---
@@ -350,3 +360,71 @@ FOCUS=none.
 
 Return **one** JSON object. No prose. No markdown. No code fences. Validate it
 mentally against the schema before emitting.
+Spoken dialogue must obey the host-naming and filler bans above.
+
+
+---
+
+---
+
+## APPROVED_GAKU_IMPROVEMENTS_2026_09
+
+Additive — do **not** remove prior Kokoro / Gemini / GPU / narrator-prompt work.
+
+### 1) No invented failure rates / unsourced stats
+- Never invent stats like "70% of AI pilots fail" (or any failure %) unless that
+  exact figure (or a faithful paraphrase) appears in RESEARCH_NOTES / the primary
+  source. If the source is qualitative ("many initiatives stall"), keep dialogue
+  qualitative — do not mint a percentage.
+- Same rule for any concrete number, ranking, company KPI, or model-accuracy %.
+  Prefer "often / commonly / many" over fake precision.
+
+### 2) Article-grounded B-roll + frequent cuts
+- Pexels / image queries must be article-grounded nouns (people, places, artifacts
+  from the source). Ban vague one-word queries: empty, team, office, project, data,
+  AI, tech, technology, future, business, innovation, digital (alone or with a
+  filler preposition). Prefer 2–4 concrete words.
+- Visual cuts / B-roll windows target ~10–15 seconds (not 25s+ holds).
+
+### 3) Richer TitleCards (not title-only ~4s)
+- Cold-open / outro `TitleCard` must include a useful `subtitle` (framework name,
+  article hook, or key claim) — never a bare title flash.
+- Mid-episode: prefer `ChapterCard` + `StatAnimation` / `PercentageRing` /
+  `FlowDiagram` / bullet overlays over another TitleCard. If you emit a TitleCard
+  at all mid-run, give it subtitle + ≥6000 ms and a real beat (stat/diagram), not
+  a 4000 ms title-only card.
+
+### 4) Soft-cap spoken lines ~12–14s
+- Soft-cap each spoken line to ~12–14 seconds (~30–36 words). Split longer
+  explanations across turns, especially chapter openers.
+
+### 5) Ban filler openers / bare ASR leftovers
+- Never start a line with: Wow / Exactly / Precisely / Indeed / Truly
+  (including one-word replies "Precisely." / "Indeed." / "Truly." / "Wow." /
+  "Exactly."). Prefer "Right —", "Ok so —", "Hold on —", "That's the bit —".
+- Also ban "That's a great point/question".
+
+### 6) Fact-check for HBR / framework listens
+- When RESEARCH_NOTES are a primary-source article (HBR framework listens such as
+  Most AI Initiatives Fail / Enterprise Gen AI), treat every number and named
+  claim as fact-check fodder. The pipeline runs a fact-check step for this class
+  (same idea as the Enterprise `factcheck_report.json`). Do not invent repairs.
+
+### 7) On-screen stats must match spoken digits
+- `overlays`/`StatCallout`/`StatAnimation`/`PercentageRing` digits must match the
+  dialogue that is speaking them (e.g. Model Accuracy 97% / from 92% — never a
+  different number). If you cannot ground the digit in the source + spoken line,
+  omit the stat overlay.
+
+### 8) Multi-item closing / framework cards include ALL items
+- Bullet overlays for named frameworks (e.g. the five Rs) must list **every**
+  item (Roles, Responsibilities, Rituals, Resources, **Results**). Never drop the
+  last item. Same rule for any explicit N-part list in a closing/recap card.
+
+### Still in force (prior approve 1–10)
+- Stall-split titles: plain titles only — never `(part N)` / `(part N/M)`.
+- Karaoke: current-word highlight only (no accumulated past-word glow).
+- Strip caption markdown (backticks / ** / * / _).
+- No UI dead air waiting on animations.
+- Visual-heavy bias through 2026-09-25: every major beat needs a real visual
+  (TitleCard/stat/diagram or grounded B-roll), not samey empty defaults.

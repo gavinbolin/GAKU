@@ -51,12 +51,17 @@ export const StatOverlay: React.FC<StatOverlayProps> = ({
   const parsed = parseNumeric(value);
   let displayValue: string;
   if (parsed) {
-    const t = interpolate(progress, [0, 0.5], [0, 1], {
+    // Snap to the scripted digits quickly (approved): long count-ups were
+    // freezing mid-value in reviews (e.g. 61% while script says 97%).
+    const t = interpolate(progress, [0, 0.12], [0, 1], {
       extrapolateLeft: "clamp",
       extrapolateRight: "clamp",
     });
-    const animated = parsed.num * t;
-    displayValue = `${parsed.prefix}${formatNumeric(animated, parsed.num)}${parsed.suffix}`;
+    const animated = t >= 1 ? parsed.num : parsed.num * t;
+    displayValue =
+      t >= 1
+        ? value.trim()
+        : `${parsed.prefix}${formatNumeric(animated, parsed.num)}${parsed.suffix}`;
   } else {
     displayValue = value;
   }
