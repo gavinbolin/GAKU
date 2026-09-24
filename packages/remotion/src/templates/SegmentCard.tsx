@@ -485,11 +485,50 @@ const SpeakerChip: React.FC<{
   );
 };
 
+const FALLBACK_ACCENT = "#7C3AED";
+const INACTIVE_WORD_COLOR = "#F5F0E8";
+/** Soft edges so adjacent karaoke words cross-fade instead of hard-cutting. */
+const KARAOKE_FADE_IN_MS = 140;
+const KARAOKE_FADE_OUT_MS = 180;
+const KARAOKE_SCALE_PEAK = 1.12;
+
 const hexToRgb = (hex: string): string => {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
   if (!m) return "255, 255, 255";
   const v = parseInt(m[1], 16);
   return `${(v >> 16) & 0xff}, ${(v >> 8) & 0xff}, ${v & 0xff}`;
+};
+
+const parseHexRgb = (hex: string): [number, number, number] => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return [245, 240, 232];
+  const v = parseInt(m[1], 16);
+  return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+};
+
+const lerpHex = (from: string, to: string, t: number): string => {
+  const clamped = Math.max(0, Math.min(1, t));
+  const [ar, ag, ab] = parseHexRgb(from);
+  const [br, bg, bb] = parseHexRgb(to);
+  const r = Math.round(ar + (br - ar) * clamped);
+  const g = Math.round(ag + (bg - ag) * clamped);
+  const b = Math.round(ab + (bb - ab) * clamped);
+  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+};
+
+const smoothstep01 = (t: number): number => {
+  const x = Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+};
+
+const resolveWordSpeakerColor = (
+  speaker: string,
+  hostAColor: string,
+  hostBColor: string,
+): string => {
+  if (speaker === "B") return hostBColor || FALLBACK_ACCENT;
+  if (speaker === "A") return hostAColor || FALLBACK_ACCENT;
+  return hostAColor || FALLBACK_ACCENT;
 };
 
 interface SubtitleBandProps {
@@ -565,7 +604,11 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
         }}
       >
         {cue.words.map((w, i) => {
-          const speakerColor = w.speaker === "A" ? hostAColor : hostBColor;
+          const speakerColor = resolveWordSpeakerColor(
+            w.speaker,
+            hostAColor,
+            hostBColor,
+          );
           const rgb = hexToRgb(speakerColor);
           // Hold the highlight until the next word begins (or cue end) so
           // short Whisper word-spans don't blink off mid-syllable.
@@ -573,42 +616,63 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
             i + 1 < cue.words.length
               ? cue.words[i + 1].start_ms
               : Math.max(w.end_ms, cue.end_ms);
-          const activeUntil = Math.max(w.end_ms, Math.min(nextStart, w.end_ms + 280));
-          const isActive =
-            !held && w.start_ms <= currentMs && currentMs < activeUntil;
+          const activeUntil = Math.max(
+            w.end_ms,
+            Math.min(nextStart, w.end_ms + 280),
+          );
           const isLastHeld = held && i === lastIdx;
 
-          let color: string;
-          let fontWeight = 500;
-          let scale = 1;
-          let textShadow = "0 2px 10px rgba(0,0,0,0.9)";
-          let backgroundColor = "transparent";
-          let padding = "0px 2px 4px 2px";
-          let borderRadius = 0;
-          let boxShadow = "none";
-
-          if (isActive || isLastHeld) {
-            color = "#0B0B1A";
-            fontWeight = 800;
-            backgroundColor = "#F5F0E8";
-            padding = "4px 14px 6px 14px";
-            borderRadius = 10;
-            boxShadow = `0 0 0 2px rgb(${rgb}), 0 8px 24px rgba(0,0,0,0.45)`;
-            textShadow = "none";
-            if (isActive) {
-              const popSpring = spring({
-                frame: frame - (w.start_ms / 1000) * fps,
-                fps,
-                config: { damping: 12, stiffness: 220, mass: 0.35 },
-              });
-              scale = interpolate(popSpring, [0, 1], [1, 1.14]);
+          // Continuous 0..1 activation with soft edges so scale/color ease
+          // across adjacent words instead of hard-cutting.
+          let activation = 0;
+          if (isLastHeld) {
+            activation = 1;
+          } else if (!held) {
+            if (
+              currentMs >= w.start_ms - KARAOKE_FADE_IN_MS &&
+              currentMs < w.start_ms
+            ) {
+              activation = interpolate(
+                currentMs,
+                [w.start_ms - KARAOKE_FADE_IN_MS, w.start_ms],
+                [0, 1],
+                { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+              );
+            } else if (currentMs >= w.start_ms && currentMs < activeUntil) {
+              activation = 1;
+            } else if (
+              currentMs >= activeUntil &&
+              currentMs < activeUntil + KARAOKE_FADE_OUT_MS
+            ) {
+              activation = interpolate(
+                currentMs,
+                [activeUntil, activeUntil + KARAOKE_FADE_OUT_MS],
+                [1, 0],
+                { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+              );
             }
-          } else {
-            // Current-word-only karaoke (approved): no accumulated past-word highlight.
-            color = "#F5F0E8";
-            fontWeight = 600;
-            textShadow = "0 2px 12px rgba(0,0,0,0.95)";
           }
+
+          const eased = smoothstep01(activation);
+
+          // Softer spring enter; gated by eased so exit also ramps down.
+          const popSpring = spring({
+            frame: Math.max(0, frame - (w.start_ms / 1000) * fps),
+            fps,
+            config: { damping: 18, stiffness: 120, mass: 0.5 },
+          });
+          const springBoost = interpolate(popSpring, [0, 1], [1, KARAOKE_SCALE_PEAK]);
+          const scale = 1 + (springBoost - 1) * eased;
+
+          // Current-word-only karaoke: no white pill / background highlight.
+          // Active word takes the speaker color (host waveform color); inactive stays cream.
+          const color = lerpHex(INACTIVE_WORD_COLOR, speakerColor, eased);
+          const fontWeight = eased > 0.35 ? 800 : 600;
+          const glowAlpha = 0.45 * eased;
+          const textShadow =
+            eased > 0.02
+              ? `0 0 ${6 + 14 * eased}px rgba(${rgb}, ${glowAlpha}), 0 2px 10px rgba(0,0,0,0.9)`
+              : "0 2px 12px rgba(0,0,0,0.95)";
 
           return (
             <span
@@ -617,10 +681,10 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
                 fontSize: 52,
                 fontWeight,
                 color,
-                backgroundColor,
-                padding,
-                borderRadius,
-                boxShadow,
+                backgroundColor: "transparent",
+                padding: "0px 2px 4px 2px",
+                borderRadius: 0,
+                boxShadow: "none",
                 transform: `scale(${scale})`,
                 transformOrigin: "center",
                 textShadow,
