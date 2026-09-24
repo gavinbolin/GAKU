@@ -9,9 +9,36 @@ export interface StatOverlayProps {
   speakerColor: string;
 }
 
-// Try to parse a numeric prefix out of the value string ("$4.8T", "1.2 billion").
-// Returns null if no numeric portion was found.
-const parseNumeric = (raw: string): { num: number; prefix: string; suffix: string } | null => {
+/**
+ * Stat value reveal -- DEFAULT: static correct text (fade/scale entrance only).
+ *
+ * Root cause of the Enterprise bug ("5-10%" flashing as "1-10%" ... "4-10%"):
+ *   parseNumeric peeled the first number off ranges as num=5 + suffix="-10%",
+ *   then lerped 0->5 so mid-frames invented wrong metrics. Commit 7a3c152 only
+ *   shortened that window (0.5 -> 0.12); it did not stop the wrong prefixes.
+ *
+ * Default (a) -- implemented: always render the scripted `value` string from
+ *   the first frame. Card opacity + scale provide the entrance motion.
+ *
+ * Alternatives (for Gavin / product -- not wired as default):
+ *   (a) Static snap -- current default. Correct final string immediately;
+ *       motion = fade/scale only. Safest for ranges ("5-10%", "3-5x").
+ *   (b) Whole-number lerp -- ONLY for simple single numbers ("42%", "$4.8T"):
+ *       interpolate the numeric value and re-format prefix+number+suffix each
+ *       frame. Never digit-roll; never touch hyphen/en-dash ranges or any
+ *       string whose suffix still contains a digit. See isSimpleSingleNumber
+ *       + the unused countUpDisplay helper below if you want to opt in.
+ *   (c) Progress / fill motion -- keep the number text fixed at the correct
+ *       final string; animate a bar, ring, or underline fill underneath
+ *       (StatAnimation's ring mode is the precedent).
+ */
+
+// Kept for optional alt (b) and for documenting why ranges must stay static.
+const RANGE_RE = /\d\s*[-–—]\s*\d/;
+
+const parseNumeric = (
+  raw: string,
+): { num: number; prefix: string; suffix: string } | null => {
   const m = /^([^\d-]*)(-?\d+(?:[.,]\d+)?)(.*)$/.exec(raw.trim());
   if (!m) return null;
   const n = parseFloat(m[2].replace(/,/g, "."));
@@ -19,10 +46,36 @@ const parseNumeric = (raw: string): { num: number; prefix: string; suffix: strin
   return { num: n, prefix: m[1], suffix: m[3] };
 };
 
+/** Gate for optional alt (b): count-up must not invent a wrong prefix/bound. */
+export const isSimpleSingleNumber = (raw: string): boolean => {
+  const trimmed = raw.trim();
+  if (!trimmed || RANGE_RE.test(trimmed)) return false;
+  const parsed = parseNumeric(trimmed);
+  if (!parsed) return false;
+  if (/\d/.test(parsed.suffix)) return false;
+  return true;
+};
+
 const formatNumeric = (n: number, original: number): string => {
-  // Preserve roughly the original precision (no trailing decimals on integers).
   if (Math.floor(original) === original) return Math.round(n).toString();
   return n.toFixed(1);
+};
+
+/**
+ * Optional alt (b): whole-value count-up for simple numbers only.
+ * Not used by the default render path -- call from displayValue if product
+ * opts into lerp motion later.
+ */
+export const countUpDisplay = (value: string, progress: number): string => {
+  const trimmed = value.trim();
+  if (!isSimpleSingleNumber(trimmed)) return trimmed;
+  const parsed = parseNumeric(trimmed)!;
+  const t = interpolate(progress, [0, 0.12], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  if (t >= 1) return trimmed;
+  return `${parsed.prefix}${formatNumeric(parsed.num * t, parsed.num)}${parsed.suffix}`;
 };
 
 export const StatOverlay: React.FC<StatOverlayProps> = ({
@@ -46,25 +99,10 @@ export const StatOverlay: React.FC<StatOverlayProps> = ({
     extrapolateRight: "clamp",
   });
 
-  // If the value parses as a number, count up to it over the first 50% of
-  // progress. Otherwise just render the string.
-  const parsed = parseNumeric(value);
-  let displayValue: string;
-  if (parsed) {
-    // Snap to the scripted digits quickly (approved): long count-ups were
-    // freezing mid-value in reviews (e.g. 61% while script says 97%).
-    const t = interpolate(progress, [0, 0.12], [0, 1], {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-    });
-    const animated = t >= 1 ? parsed.num : parsed.num * t;
-    displayValue =
-      t >= 1
-        ? value.trim()
-        : `${parsed.prefix}${formatNumeric(animated, parsed.num)}${parsed.suffix}`;
-  } else {
-    displayValue = value;
-  }
+  // Default (a): scripted value as-is. Do NOT count digits -- ranges and
+  // multi-number strings must never pass through wrong intermediate text.
+  // To enable alt (b) for simple numbers only: displayValue = countUpDisplay(value, progress);
+  const displayValue = value.trim();
 
   return (
     <div
