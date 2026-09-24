@@ -491,6 +491,9 @@ const INACTIVE_WORD_COLOR = "#F5F0E8";
 const KARAOKE_FADE_IN_MS = 140;
 const KARAOKE_FADE_OUT_MS = 180;
 const KARAOKE_SCALE_PEAK = 1.12;
+/** Side inset + caption width leave slack so peak-scale / weight never reflows wraps. */
+const KARAOKE_BAND_PAD_X = 140;
+const KARAOKE_CAPTION_MAX_WIDTH = "88%";
 
 const hexToRgb = (hex: string): string => {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
@@ -559,8 +562,8 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
     bottom: 110,
     paddingTop: 28,
     paddingBottom: 28,
-    paddingLeft: 80,
-    paddingRight: 80,
+    paddingLeft: KARAOKE_BAND_PAD_X,
+    paddingRight: KARAOKE_BAND_PAD_X,
     backgroundColor: "rgba(0, 0, 0, 0.62)",
     backdropFilter: "blur(20px)",
     WebkitBackdropFilter: "blur(20px)",
@@ -600,7 +603,7 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
           alignItems: "center",
           justifyContent: "center",
           gap: 18,
-          maxWidth: "100%",
+          maxWidth: KARAOKE_CAPTION_MAX_WIDTH,
         }}
       >
         {cue.words.map((w, i) => {
@@ -667,7 +670,9 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
           // Current-word-only karaoke: no white pill / background highlight.
           // Active word takes the speaker color (host waveform color); inactive stays cream.
           const color = lerpHex(INACTIVE_WORD_COLOR, speakerColor, eased);
-          const fontWeight = eased > 0.35 ? 800 : 600;
+          // Lock weight: 600→800 widens glyphs and reflows flex-wrap lines.
+          // Grow is transform:scale only (layout width stays at unscaled metrics).
+          const fontWeight = 800;
           const glowAlpha = 0.45 * eased;
           const textShadow =
             eased > 0.02
@@ -685,6 +690,7 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
                 padding: "0px 2px 4px 2px",
                 borderRadius: 0,
                 boxShadow: "none",
+                // Layout-stable grow: scale does not affect flex-wrap flow.
                 transform: `scale(${scale})`,
                 transformOrigin: "center",
                 textShadow,
