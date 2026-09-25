@@ -28,14 +28,34 @@ export interface StatOverlayProps {
 // Range detector: hyphen / en-dash / em-dash bounds must stay static forever.
 const RANGE_RE = /\d\s*[-–—]\s*\d/;
 
-const parseNumeric = (
-  raw: string,
-): { num: number; prefix: string; suffix: string } | null => {
-  const m = /^([^\d-]*)(-?\d+(?:[.,]\d+)?)(.*)$/.exec(raw.trim());
+// 2026-09-25: thousands separators are grouping, not decimals. The old
+// parser read "10,000 versions" as 10.000 and rolled 0 -> 10 before snapping
+// to "10,000" (a wrong intermediate value). Grouped ints now count 0 -> 10,000
+// with commas; decimals keep their original precision.
+interface ParsedNumeric {
+  num: number;
+  prefix: string;
+  suffix: string;
+  grouped: boolean;
+  decimals: number;
+}
+
+const parseNumeric = (raw: string): ParsedNumeric | null => {
+  const m = /^([^\d-]*)(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)(.*)$/.exec(
+    raw.trim(),
+  );
   if (!m) return null;
-  const n = parseFloat(m[2].replace(/,/g, "."));
+  const numStr = m[2];
+  const n = parseFloat(numStr.replace(/,/g, ""));
   if (!isFinite(n)) return null;
-  return { num: n, prefix: m[1], suffix: m[3] };
+  const dot = numStr.indexOf(".");
+  return {
+    num: n,
+    prefix: m[1],
+    suffix: m[3],
+    grouped: numStr.includes(","),
+    decimals: dot >= 0 ? numStr.length - dot - 1 : 0,
+  };
 };
 
 /** Gate: count-up only when a single metric; must not invent a wrong prefix/bound. */
@@ -45,12 +65,30 @@ export const isSimpleSingleNumber = (raw: string): boolean => {
   const parsed = parseNumeric(trimmed);
   if (!parsed) return false;
   if (/\d/.test(parsed.suffix)) return false;
+  // Bare years (e.g. "2023") are labels, not quantities -- keep static.
+  if (!parsed.prefix && !parsed.suffix.trim() && /^(19|20)\d\d$/.test(trimmed)) return false;
   return true;
 };
 
-const formatNumeric = (n: number, original: number): string => {
-  if (Math.floor(original) === original) return Math.round(n).toString();
-  return n.toFixed(1);
+const formatNumeric = (n: number, parsed: ParsedNumeric): string => {
+  const opts: Intl.NumberFormatOptions = {
+    minimumFractionDigits: parsed.decimals,
+    maximumFractionDigits: parsed.decimals,
+    useGrouping: parsed.grouped,
+  };
+  const v = parsed.decimals > 0 ? n : Math.round(n);
+  return v.toLocaleString("en-US", opts);
+};
+
+/** Count-up at an explicit 0..1 time fraction (used by StatHero). */
+export const countUpAt = (value: string, t01: number): string => {
+  const trimmed = value.trim();
+  if (!isSimpleSingleNumber(trimmed)) return trimmed;
+  const parsed = parseNumeric(trimmed)!;
+  const t = Math.max(0, Math.min(1, t01));
+  if (t >= 1) return trimmed;
+  const eased = 1 - Math.pow(1 - t, 3);
+  return `${parsed.prefix}${formatNumeric(parsed.num * eased, parsed)}${parsed.suffix}`;
 };
 
 /**
@@ -67,7 +105,7 @@ export const countUpDisplay = (value: string, progress: number): string => {
     extrapolateRight: "clamp",
   });
   if (t >= 1) return trimmed;
-  return `${parsed.prefix}${formatNumeric(parsed.num * t, parsed.num)}${parsed.suffix}`;
+  return `${parsed.prefix}${formatNumeric(parsed.num * t, parsed)}${parsed.suffix}`;
 };
 
 export const StatOverlay: React.FC<StatOverlayProps> = ({

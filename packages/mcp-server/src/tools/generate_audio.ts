@@ -14,11 +14,99 @@
 // writing the WAV; for VibeVoice it's the aligned per-line span. Using a
 // word-count estimate would let overlays drift seconds out of sync over a
 // multi-minute podcast.
+//
+// 2026-09-25: TTS pronunciation lexicon (config/tts_lexicon.json). Respellings
+// are applied to a DEEP COPY of the episode that only the TTS backend sees.
+// The caller's episode object (and episode.json on disk) keeps the written
+// spelling, so captions / karaoke / cards never show the respelling.
+// visual_queue.compute_word_timings folds the respelled whisper tokens back.
 
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createTtsBackend } from "../tts/index.js";
 import type { AudioClip } from "../tts/TtsBackend.js";
 
 export type { AudioClip };
+
+interface LexiconEntry {
+  written: string;
+  spoken: string;
+  backends: string[];
+}
+
+function lexiconPath(): string {
+  if (process.env.GAKU_TTS_LEXICON) return process.env.GAKU_TTS_LEXICON;
+  // packages/mcp-server/{src|dist}/tools -> podcast-pipeline/config
+  const here = dirname(fileURLToPath(import.meta.url));
+  return resolve(here, "..", "..", "..", "..", "config", "tts_lexicon.json");
+}
+
+export function loadLexicon(path: string = lexiconPath()): LexiconEntry[] {
+  if (!existsSync(path)) return [];
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8")) as { entries?: unknown[] };
+    const out: LexiconEntry[] = [];
+    for (const raw of data.entries ?? []) {
+      const e = raw as Record<string, unknown>;
+      const written = String(e.written ?? "").trim();
+      const spoken = String(e.spoken ?? "").trim();
+      if (!written || !spoken || written === spoken) continue;
+      const backends = Array.isArray(e.backends)
+        ? (e.backends as unknown[]).map((b) => String(b).toLowerCase())
+        : [];
+      out.push({ written, spoken, backends });
+    }
+    out.sort((a, b) => b.written.length - a.written.length);
+    return out;
+  } catch (err) {
+    process.stderr.write(`[generate_audio] lexicon unreadable (${(err as Error).message}); ignoring\n`);
+    return [];
+  }
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchCase(src: string, repl: string): string {
+  if (src.length > 1 && src === src.toUpperCase() && src !== src.toLowerCase()) return repl.toUpperCase();
+  if (src[0] && src[0] === src[0].toUpperCase() && src[0] !== src[0].toLowerCase()) {
+    return repl[0].toUpperCase() + repl.slice(1);
+  }
+  return repl.toLowerCase();
+}
+
+/** Same rules as tts_lexicon.apply_lexicon (whole word, case-preserving). */
+export function applyLexicon(text: string, lexicon: LexiconEntry[], backend: string): string {
+  let out = text ?? "";
+  for (const e of lexicon) {
+    if (e.backends.length > 0 && !e.backends.includes(backend)) continue;
+    const re = new RegExp(`(?<![\\w-])${escapeRe(e.written)}(?![\\w])`, "gi");
+    out = out.replace(re, (m) => matchCase(m, e.spoken));
+  }
+  return out;
+}
+
+function spokenCopy(episodeRaw: object, backend: string): { episode: object; changed: number } {
+  const lexicon = loadLexicon();
+  if (lexicon.length === 0) return { episode: episodeRaw, changed: 0 };
+  const copy = JSON.parse(JSON.stringify(episodeRaw)) as {
+    segments?: { lines?: { text?: string }[] }[];
+  };
+  let changed = 0;
+  for (const seg of copy.segments ?? []) {
+    for (const line of seg.lines ?? []) {
+      if (typeof line.text !== "string") continue;
+      const spoken = applyLexicon(line.text, lexicon, backend);
+      if (spoken !== line.text) {
+        line.text = spoken;
+        changed++;
+      }
+    }
+  }
+  return { episode: copy, changed };
+}
 
 export async function generateAudio(
   episodeRaw: object,
@@ -26,5 +114,9 @@ export async function generateAudio(
 ): Promise<{ clips: AudioClip[] }> {
   const backend = createTtsBackend();
   process.stderr.write(`[generate_audio] backend=${backend.name}\n`);
-  return backend.generate(episodeRaw, outDir);
+  const { episode, changed } = spokenCopy(episodeRaw, String(backend.name).toLowerCase());
+  if (changed > 0) {
+    process.stderr.write(`[generate_audio] tts lexicon respelled ${changed} line(s) (TTS input only)\n`);
+  }
+  return backend.generate(episode, outDir);
 }

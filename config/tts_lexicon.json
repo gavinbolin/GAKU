@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "PROJECT GAKU TTS pronunciation lexicon. Applied ONLY to the text sent to TTS (Kokoro / VibeVoice) in packages/mcp-server/src/tools/generate_audio.ts. episode.json, on-screen captions, karaoke words, bullets and titles keep the written spelling. See docs/tts-lexicon.md.",
+  "entries": [
+    {
+      "written": "Politzer",
+      "spoken": "Pahlitzer",
+      "backends": [
+        "kokoro",
+        "vibevoice"
+      ],
+      "heard_as": [
+        "Pahlitzer",
+        "Palitzer",
+        "Pallitzer",
+        "Parlitzer",
+        "Pollitzer"
+      ],
+      "notes": "HBR author Daniel Politzer (POL-it-zer, American 'ah'). The 2026-09-23 Enterprise Gen AI episode's review transcript heard 'Pulitzer'. Kokoro A/B 2026-09-25 (bm_lewis + bf_v0isabella, faster-whisper base/small/base.en, no prompt): 'Pahlitzer' was never heard as Pulitzer (Palitzer/Pallitzer/Parlitzer), while the IPA override [Politzer](/pˈɑlɪtsəɹ/) was heard as 'Pulitzer' 4/4. Clips: output/gaku-review/20260925_pipeline_upgrade_test/tts_lexicon_politzer/."
+    }
+  ]
+}

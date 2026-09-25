@@ -244,13 +244,17 @@ const tools: ToolDef[] = [
   {
     name: "gemini_image_query",
     description:
-      "Ask Gemini for a 2-4 word Pexels image search query that illustrates a podcast excerpt. Returns { query }. Used to drop context-aware background images into the center of the video.",
+      "Ask Gemini for concrete 2-4 word Pexels search queries that illustrate a podcast excerpt (optional context). Returns { query, candidates, model }. Used to drop context-aware background images into the center of the video.",
     inputSchema: {
       type: "object",
-      properties: { excerpt: { type: "string" } },
+      properties: { excerpt: { type: "string" }, context: { type: "string" } },
       required: ["excerpt"],
     },
-    handler: (args) => geminiImageQuery({ excerpt: args.excerpt as string }),
+    handler: (args) =>
+      geminiImageQuery({
+        excerpt: args.excerpt as string,
+        context: typeof args.context === "string" ? (args.context as string) : undefined,
+      }),
   },
   {
     name: "preview_visual",

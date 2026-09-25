@@ -1,7 +1,13 @@
 """
 Segment Blocks visual queue.
-Produces one visual per podcast segment plus open/close title cards.
+Produces one SegmentCard per podcast segment plus open/close title cards.
 Timing comes from measured audio clip durations, not guesses.
+
+2026-09-25 upgrade: each SegmentCard now carries a `beats` timeline built by
+visual_timeline.plan_episode (chapter titles, deduped StatHeroes, diagrams,
+capped bullets/charts, B-roll cuts every ~10-15s) and rotating never-reused
+`backdrops` (broll_queries.PexelsPicker). The script's per-segment `visuals`
+array is consumed again (it was silently ignored before).
 """
 
 from __future__ import annotations
@@ -615,6 +621,13 @@ def compute_word_timings(
             print(f"[visual_queue] audio_path missing ({ap}); using proportional", file=sys.stderr)
 
     if aligned:
+        # TTS lexicon respellings (e.g. "Pollitser") fold back to the written
+        # word so karaoke shows "Politzer" with the spoken timing.
+        try:
+            from tts_lexicon import collapse_spoken_tokens
+            aligned = collapse_spoken_tokens(aligned)
+        except Exception as exc:  # lexicon is optional
+            print(f"[visual_queue] lexicon collapse skipped: {exc!r}", file=sys.stderr)
         bounds = _line_bounds(episode, durations)
         anchored = _script_anchored_timings(episode, aligned, bounds)
         if anchored:
@@ -987,13 +1000,15 @@ _VAGUE_PEXELS = re.compile(
 )
 
 
-def _ground_pexels_query(query: str, fallback: str = "office collaboration meeting") -> str:
-    q = (query or "").strip()
-    q = re.sub(r"\s+", " ", q)
-    if (not q) or _VAGUE_PEXELS.match(q) or q.lower() in {"ai", "ai for", "artificial intelligence", "empty", "team", "office", "project", "data", "people", "work", "meeting"}:
+def _ground_pexels_query(query: str, fallback: str = "colleagues discussing laptop office") -> str:
+    """Legacy entry point, now backed by broll_queries.validate_query: rejects
+    single words ("AI", "Global"), stopword fragments ("Un"), robot metaphors
+    and word-art magnets ("strategic business" -> STRATEGY letter blocks)."""
+    from broll_queries import clean_query, validate_query
+    q = clean_query(query)
+    if (not q) or _VAGUE_PEXELS.match(q) or not validate_query(q)[0]:
         return fallback
-    q2 = re.sub(r"^(?:ai|artificial intelligence)\s+", "", q, flags=re.IGNORECASE).strip()
-    return q2 or fallback
+    return q
 
 
 def fetch_pexels_photo(
@@ -1096,7 +1111,7 @@ def build_graphics_manifest(
         except (OSError, json.JSONDecodeError):
             pass
 
-    if not full_transcript_words or not pexels_key or mcp_client is None:
+    if not full_transcript_words or not pexels_key:
         return []
 
     # Build ~25s windows. Walk in time order, flushing whenever the window
@@ -1119,20 +1134,23 @@ def build_graphics_manifest(
         text = " ".join((w.get("word") or "").strip() for w in window if w.get("word")).strip()
         if not text:
             continue
-        try:
-            resp = mcp_client.call("gemini_image_query", {"excerpt": text})
-        except Exception as exc:
-            print(f"[graphics] window {idx}: gemini call failed: {exc}", file=sys.stderr)
-            continue
+        resp: Any = {}
+        if mcp_client is not None:
+            try:
+                resp = mcp_client.call("gemini_image_query", {"excerpt": text})
+            except Exception as exc:
+                print(f"[graphics] window {idx}: gemini call failed: {exc}", file=sys.stderr)
+                resp = {"gemini_failed": True, "warning": str(exc)}
         if not isinstance(resp, dict):
-            continue
-        query = _ground_pexels_query((resp.get("query") or "").strip(), fallback="team workshop whiteboard")
-        if not query or resp.get("gemini_failed"):
+            resp = {}
+        from broll_queries import local_query_candidates
+        local = local_query_candidates(text, "", salt=idx)
+        query = _ground_pexels_query((resp.get("query") or "").strip(), fallback=local[0])
+        if resp.get("gemini_failed"):
             print(
-                f"[graphics] window {idx}: no query ({resp.get('warning') or 'empty'})",
+                f"[graphics] window {idx}: gemini failed ({resp.get('warning') or 'empty'}); local query {query!r}",
                 file=sys.stderr,
             )
-            continue
         photo = fetch_pexels_photo(query, "landscape", pexels_key=pexels_key, run_dir=run_dir)
         if not photo:
             print(f"[graphics] window {idx}: pexels miss for {query!r}", file=sys.stderr)
@@ -1152,6 +1170,47 @@ def build_graphics_manifest(
     return graphics
 
 
+def _make_gemini_query(mcp_client: Any, run_dir: Path):
+    """Return fn(excerpt, context) -> [queries] backed by the MCP
+    gemini_image_query tool (cached per window in broll_queries.json), or None
+    when no MCP client / disabled via GAKU_BROLL_GEMINI=0. Suggestions are
+    validated by the planner and fall back to local article-grounded queries."""
+    if mcp_client is None or os.environ.get("GAKU_BROLL_GEMINI", "1") == "0":
+        return None
+    from broll_queries import window_hash
+    cache_path = Path(run_dir) / "broll_queries.json"
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    state = {"fails": 0}
+
+    def _q(excerpt: str, context: str) -> list[str]:
+        key = window_hash(context + "|" + excerpt)
+        if key in cache:
+            return list(cache[key])
+        if state["fails"] >= 4:  # Gemini down / key invalid -> stop asking
+            return []
+        try:
+            resp = mcp_client.call("gemini_image_query", {"excerpt": excerpt[:1200], "context": context[:300]})
+        except Exception as exc:  # MCP hiccup -> local fallback queries
+            resp = {"gemini_failed": True, "warning": repr(exc)}
+        if not isinstance(resp, dict) or resp.get("gemini_failed"):
+            state["fails"] += 1
+            print(f"[broll] gemini_image_query failed: {(resp or {}).get('warning') if isinstance(resp, dict) else resp}", file=sys.stderr)
+            return []
+        state["fails"] = 0
+        out = [str(x) for x in (resp.get("candidates") or []) if x] or ([resp["query"]] if resp.get("query") else [])
+        cache[key] = out
+        try:
+            cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        return out
+
+    return _q
+
+
 def build_visual_manifest(
     episode: dict[str, Any],
     clip_durations: Any,
@@ -1164,7 +1223,11 @@ def build_visual_manifest(
 
     Produces (in order):
       - TitleCard cold-open (5s)
-      - one SegmentCard per segment (timing from measured audio)
+      - one SegmentCard per segment (timing from measured audio). Since
+        2026-09-25 each SegmentCard carries a `beats` timeline (mid-episode
+        chapter cards, stat heroes, diagrams, bullets, charts, B-roll cuts)
+        and rotating `backdrops` from visual_timeline.plan_episode, which
+        consumes the script's planned `visuals` + overlays.
       - TitleCard outro (5s) at the tail
 
     Writes the result to `<run_dir>/visual_manifest.json` and returns it.
@@ -1186,16 +1249,6 @@ def build_visual_manifest(
     word_timings = compute_word_timings(episode, clip_durations, audio_path=audio_path)
     # Pre-load durations once for per-segment overlay ms resolution.
     durations_map = _load_clip_durations(clip_durations)
-    # Context-aware center graphics. Driven by the same word list, so it falls
-    # back to [] when whisper alignment is unavailable or pexels/gemini aren't
-    # configured.
-    graphics_manifest = build_graphics_manifest(
-        word_timings,
-        episode,
-        run_dir,
-        pexels_key=pexels_key,
-        mcp_client=mcp_client,
-    )
     if not seg_timings:
         manifest = {"total_duration_ms": 0, "visuals": []}
         (run_dir / "visual_manifest.json").write_text(
@@ -1213,6 +1266,67 @@ def build_visual_manifest(
     topic = (episode.get("topic") or "").strip()
 
     visuals: list[dict[str, Any]] = []
+
+    # Card windows on the global timeline (segment 1 starts after the cold
+    # open, the last segment stops before the outro).
+    n_segs = len(episode.get("segments") or [])
+    card_windows: list[tuple[int, int]] = []
+    for i, timing in enumerate(seg_timings[:n_segs], 1):
+        cs, ce = int(timing["start_ms"]), int(timing["end_ms"])
+        if i == 1:
+            cs = TITLE_CARD_MS
+        if i == n_segs:
+            ce = max(cs + 1000, total_ms - TITLE_CARD_MS)
+        card_windows.append((cs, ce))
+
+    # Beat timeline + B-roll + backdrops (approved 2026-09-25 items 1-9).
+    from broll_queries import PexelsPicker
+    import visual_timeline as vt
+
+    picker = PexelsPicker(run_dir, pexels_key)
+    plan = vt.plan_episode(
+        episode=episode,
+        durations=durations_map,
+        seg_timings=seg_timings,
+        card_windows=card_windows,
+        word_timings=word_timings,
+        color_a=a_color,
+        color_b=b_color,
+        total_ms=total_ms,
+        picker=picker if pexels_key else None,
+        clean_title=_clean_segment_title,
+        complete_items=_complete_framework_items,
+        gemini_query=_make_gemini_query(mcp_client, run_dir),
+    )
+    picker.save()
+    plan_segments = plan["segments"]
+    try:
+        (run_dir / "visual_plan_report.json").write_text(
+            json.dumps(plan["report"], indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        # graphics_manifest.json = absolute B-roll windows (never silently empty).
+        gm = [
+            {
+                "start_ms": int(b["start"]),
+                "end_ms": int(b["end"]),
+                "photo_url": b.get("photo_url") or "",
+                "query": b.get("query") or "",
+                "photo_id": b.get("photo_id"),
+                "segment": b.get("segment"),
+            }
+            for b in plan["report"]["broll"]
+        ]
+        (run_dir / "graphics_manifest.json").write_text(json.dumps(gm, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[visual_queue] warn: could not write plan report: {exc}", file=sys.stderr)
+    summ = plan["report"].get("summary") or {}
+    print(
+        f"[visual_queue] plan: {summ.get('chapters')} chapters, {summ.get('stat_heroes')} stat heroes, "
+        f"{summ.get('diagrams')} diagrams, {summ.get('charts')} charts, {summ.get('bullets')} bullet cards, "
+        f"{summ.get('broll_cuts')} b-roll cuts ({summ.get('broll_pct_of_segments')}% of runtime), "
+        f"{summ.get('unique_photos')} unique photos",
+        file=sys.stderr,
+    )
 
     # 1. Cold-open title card (5s at the very start, overlapping the first
     #    segment's audio).
@@ -1235,24 +1349,13 @@ def build_visual_manifest(
         speaker = _current_speaker(seg)
         seg_idx = i - 1
 
-        photo_url = None
-        if pexels_key:
-            query = _ground_pexels_query(f"{seg_title}".strip(), fallback="enterprise team planning session")
-            photo = fetch_pexels_photo(query, "landscape", pexels_key=pexels_key, run_dir=run_dir)
-            if photo:
-                photo_url = photo["url"]
-
-        # SegmentCard runs for the full segment. The opening/closing title
-        # cards crossfade over the start/end during composition.
-        start_ms = timing["start_ms"]
-        end_ms = timing["end_ms"]
-        if i == 1:
-            # First segment: let the cold-open title card fully play, then
-            # cut in. Avoids both cards fighting for the same frame.
-            start_ms = TITLE_CARD_MS
-        if i == len(segments):
-            # Last segment: stop 5s before the end to make room for the outro.
-            end_ms = max(start_ms + 1000, total_ms - TITLE_CARD_MS)
+        # SegmentCard runs for the full segment (see card_windows above). The
+        # opening/closing title cards crossfade over the start/end.
+        start_ms, end_ms = card_windows[seg_idx]
+        seg_plan = plan_segments[seg_idx] if seg_idx < len(plan_segments) else {"beats": [], "backdrops": []}
+        backdrops = seg_plan.get("backdrops") or []
+        # Backdrop = rotating, per-episode unique Pexels stills (no reuse).
+        photo_url = backdrops[0]["photo_url"] if backdrops else None
 
         # Filter the global word list down to this segment's words, rebase
         # timestamps to the SegmentCard's start_ms (segment 1 is offset by the
@@ -1276,27 +1379,18 @@ def build_visual_manifest(
         # open, so the SegmentCard starts at TITLE_CARD_MS on the global
         # timeline but t=0 inside the card itself, which is what we already
         # produce (line_starts are segment-relative).
-        seg_overlays = _build_overlay_entries(
-            seg,
-            durations_map,
-            speaker_color_a=a_color,
-            speaker_color_b=b_color,
-        )
-
-        # Graphics that overlap this segment's absolute time range, rebased.
-        seg_graphics = []
-        for g in graphics_manifest:
-            g_start = int(g.get("start_ms", 0))
-            g_end = int(g.get("end_ms", 0))
-            # Overlap test against [start_ms, end_ms) on the absolute timeline.
-            if g_end <= start_ms or g_start >= end_ms:
-                continue
-            seg_graphics.append({
-                "start_ms": g_start - start_ms,
-                "end_ms": g_end - start_ms,
-                "photo_url": g.get("photo_url") or "",
-                "query": g.get("query") or "",
-            })
+        # Legacy overlays/graphics are folded into `beats` by the planner
+        # (non-overlapping, so a long bullets card can no longer mask a stat).
+        seg_beats = seg_plan.get("beats") or []
+        seg_overlays: list[dict[str, Any]] = []
+        seg_graphics: list[dict[str, Any]] = []
+        if not seg_beats:
+            seg_overlays = _build_overlay_entries(
+                seg,
+                durations_map,
+                speaker_color_a=a_color,
+                speaker_color_b=b_color,
+            )
 
         visuals.append({
             "visual_id": f"segment_{i:02d}",
@@ -1316,6 +1410,8 @@ def build_visual_manifest(
                 "sentence_timings": sentence_timings,
                 "graphics": seg_graphics,
                 "overlays": seg_overlays,
+                "beats": seg_beats,
+                "backdrops": backdrops,
             },
         })
 
@@ -1334,6 +1430,7 @@ def build_visual_manifest(
     manifest = {
         "total_duration_ms": total_ms,
         "segment_timings": seg_timings,
+        "plan_summary": plan["report"].get("summary"),
         "visuals": visuals,
     }
     (run_dir / "visual_manifest.json").write_text(

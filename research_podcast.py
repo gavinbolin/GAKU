@@ -117,6 +117,46 @@ def run_gaku(topic: str) -> Path:
     return DEFAULT_RESULTS
 
 
+def _extract_pdf_to_md(pdf_path: Path, out_parent: Path) -> Path:
+    """Extract an article PDF's text into <out>/_source_pdfs/<stem>.md.
+
+    Keeps it simple (page text in reading order, de-hyphenated, page numbers
+    and repeated running headers dropped) so Gemini gets the full article as
+    research notes and fact-check gets it as the primary source."""
+    import fitz  # pymupdf
+
+    if not pdf_path.exists():
+        raise FileNotFoundError(pdf_path)
+    doc = fitz.open(str(pdf_path))
+    pages = [page.get_text("text") for page in doc]
+    doc.close()
+    line_counts: dict[str, int] = {}
+    for txt in pages:
+        for ln in {l.strip() for l in txt.splitlines() if l.strip()}:
+            line_counts[ln] = line_counts.get(ln, 0) + 1
+    repeated = {ln for ln, c in line_counts.items() if c >= max(3, len(pages) // 2) and len(ln) < 90}
+    out_lines: list[str] = []
+    for txt in pages:
+        for ln in txt.splitlines():
+            t = ln.strip()
+            if not t or t in repeated or re.fullmatch(r"\d{1,4}", t):
+                if out_lines and out_lines[-1]:
+                    out_lines.append("")
+                continue
+            if out_lines and out_lines[-1].endswith("-") and t[:1].islower():
+                out_lines[-1] = out_lines[-1][:-1] + t
+            else:
+                out_lines.append(t)
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    if len(body) < 500:
+        raise ValueError(f"PDF text too short ({len(body)} chars) -- scanned PDF?")
+    dest_dir = out_parent / "_source_pdfs"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / (re.sub(r"[^\w.-]+", "_", pdf_path.stem)[:80] + ".md")
+    dest.write_text(f"# Source: {pdf_path.name}\n\n{body}\n", encoding="utf-8")
+    return dest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Topic -> scraped sources -> Gemini script -> narrated podcast audio."
@@ -221,11 +261,30 @@ def main() -> int:
              "Also auto-detects hbr_source.md / *_source.txt in the run dir.",
     )
     parser.add_argument(
+        "--source-pdf",
+        default=None,
+        help="HBR/article PDF. Text is extracted (pymupdf) to hbr_source.md and used as "
+             "--research-md and --source when those are not given.",
+    )
+    parser.add_argument(
         "--skip-factcheck",
         action="store_true",
         help="Skip the primary-source fact-check step even when a source file is present.",
     )
     args = parser.parse_args()
+
+    source_pdf_md: Path | None = None
+    if args.source_pdf and not args.episode_in:
+        try:
+            source_pdf_md = _extract_pdf_to_md(Path(args.source_pdf).resolve(), Path(args.out).resolve())
+        except Exception as exc:
+            print(f"--source-pdf extraction failed: {exc!r}", file=sys.stderr)
+            return 2
+        if not args.research_md:
+            args.research_md = str(source_pdf_md)
+        if not args.source:
+            args.source = str(source_pdf_md)
+        print(f"[podcast] source PDF -> {source_pdf_md}", file=sys.stderr)
 
     # Resolve voices. If either side wasn't pinned on the CLI, pick a random
     # pair (mixed-gender 75% of the time). If only one side was pinned, fill
@@ -280,6 +339,12 @@ def main() -> int:
             shutil.copyfile(research_path, out_dir / "results.md")
         except OSError as exc:
             print(f"[podcast] warning: failed to copy results.md: {exc}", file=sys.stderr)
+        if source_pdf_md is not None:
+            try:
+                shutil.copyfile(source_pdf_md, out_dir / "hbr_source.md")
+                args.source = str(out_dir / "hbr_source.md")
+            except OSError as exc:
+                print(f"[podcast] warning: failed to copy hbr_source.md: {exc}", file=sys.stderr)
 
     print(f"[podcast] spawning MCP server: {' '.join(MCP_SERVER_CMD)}", file=sys.stderr)
     client = MCPClient(MCP_SERVER_CMD)

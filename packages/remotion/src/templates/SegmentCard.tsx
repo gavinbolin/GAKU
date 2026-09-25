@@ -10,6 +10,13 @@ import {
 import { BulletOverlay } from "../components/overlays/BulletOverlay";
 import { StatOverlay } from "../components/overlays/StatOverlay";
 import { ChartOverlay } from "../components/overlays/ChartOverlay";
+import { StatHero, type StatCompanion } from "../components/overlays/StatHero";
+import { ChapterTitleOverlay } from "../components/overlays/ChapterTitleOverlay";
+import {
+  DiagramOverlay,
+  type DiagramColumn,
+  type DiagramNode,
+} from "../components/overlays/DiagramOverlay";
 import { PodcastBackground } from "./PodcastBackground";
 
 export interface WordTiming {
@@ -47,6 +54,41 @@ export interface OverlayEntry {
   data_points?: { label: string; value: number }[];
 }
 
+/**
+ * One entry of the in-segment beat timeline (visual_timeline.plan_episode).
+ * Beats never overlap each other, so a long card can't mask a stat.
+ */
+export interface BeatEntry {
+  type: "chapter" | "stat" | "diagram" | "bullets" | "chart" | "broll";
+  show_ms: number;
+  hide_ms: number;
+  speakerColor?: string;
+  title?: string;
+  subtitle?: string;
+  chapter_number?: number;
+  accent?: string;
+  label?: string;
+  value?: string;
+  subtext?: string;
+  companions?: StatCompanion[];
+  kind?: string;
+  nodes?: DiagramNode[];
+  center?: string;
+  columns?: DiagramColumn[];
+  items?: string[];
+  chart_type?: string;
+  data_points?: { label: string; value: number }[];
+  photo_url?: string;
+  query?: string;
+}
+
+export interface BackdropEntry {
+  start_ms: number;
+  end_ms: number;
+  photo_url: string;
+  query?: string;
+}
+
 export interface SegmentCardProps {
   title: string;
   bullets?: string[];
@@ -60,6 +102,8 @@ export interface SegmentCardProps {
   sentence_timings?: SentenceTiming[];
   graphics?: GraphicEntry[];
   overlays?: OverlayEntry[];
+  beats?: BeatEntry[];
+  backdrops?: BackdropEntry[];
 }
 
 const TEXT = "#f5f0e8";
@@ -170,6 +214,8 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
   sentence_timings,
   graphics,
   overlays,
+  beats,
+  backdrops,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -204,7 +250,23 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
   const hasActiveOverlay = overlaysList.some(
     (o) => o.show_ms <= currentMs && currentMs < o.hide_ms,
   );
-  const showStageCard = !hasActiveGraphic && !hasActiveOverlay && !hasPhoto;
+  const beatList = beats ?? [];
+  const hasBeats = beatList.length > 0;
+  const activeBeat =
+    beatList.find((b) => b.show_ms <= currentMs && currentMs < b.hide_ms) ?? null;
+  const backdropList: BackdropEntry[] =
+    backdrops && backdrops.length > 0
+      ? backdrops
+      : hasPhoto
+        ? [{ start_ms: 0, end_ms: (durationInFrames / fps) * 1000, photo_url: photo_url as string }]
+        : [];
+  const showStageCard =
+    !activeBeat &&
+    backdropList.length === 0 &&
+    !hasActiveGraphic &&
+    !hasActiveOverlay &&
+    !hasPhoto;
+  const chapterActive = activeBeat?.type === "chapter";
 
   const kenBurns = interpolate(
     frame,
@@ -259,24 +321,14 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
           transformOrigin: "center",
         }}
       >
-        {hasPhoto ? (
-          <AbsoluteFill
-            style={{
-              transform: `scale(${kenBurns})`,
-              transformOrigin: "center",
-            }}
-          >
-            <Img
-              src={photo_url}
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
-          </AbsoluteFill>
+        {backdropList.length > 0 ? (
+          <BackdropLayer backdrops={backdropList} currentMs={currentMs} kenBurnsFallback={kenBurns} />
         ) : (
           <PodcastBackground topic={title} subtitle="" variant="backdrop" />
         )}
 
         <AbsoluteFill
-          style={{ backgroundColor: hasPhoto ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.22)" }}
+          style={{ backgroundColor: backdropList.length > 0 ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.22)" }}
         />
       </AbsoluteFill>
 
@@ -297,35 +349,38 @@ export const SegmentCard: React.FC<SegmentCardProps> = ({
           />
         ) : null}
 
-        <CenterGraphic graphics={graphicsList} currentMs={currentMs} frame={frame} fps={fps} />
-        <CenterOverlay overlays={overlaysList} currentMs={currentMs} frame={frame} fps={fps} />
+        {hasBeats ? (
+          <BeatsLayer beats={beatList} currentMs={currentMs} fallbackColor={host_a_color} />
+        ) : (
+          <>
+            <CenterGraphic graphics={graphicsList} currentMs={currentMs} frame={frame} fps={fps} />
+            <CenterOverlay overlays={overlaysList} currentMs={currentMs} frame={frame} fps={fps} />
+          </>
+        )}
 
+        {/* 2026-09-25 item 9: segment label soft-killed to small corner chrome
+            (was a big centered all-caps pill that read like a slide deck). */}
         <div
           style={{
             position: "absolute",
-            top: 40,
-            left: 80,
-            right: 80,
-            display: "flex",
-            justifyContent: "center",
+            top: 34,
+            left: 48,
+            maxWidth: "46%",
             pointerEvents: "none",
+            opacity: chapterActive ? 0 : 0.78,
           }}
         >
           <div
             style={{
-              fontSize: 26,
-              fontWeight: 700,
-              letterSpacing: 3.5,
+              fontSize: 17,
+              fontWeight: 600,
+              letterSpacing: 2.2,
               textTransform: "uppercase",
-              color: "rgba(245,240,232,0.95)",
-              padding: "12px 28px",
+              color: "rgba(245,240,232,0.82)",
+              padding: "7px 16px",
               borderRadius: 999,
-              backgroundColor: "rgba(0,0,0,0.4)",
-              border: "1px solid rgba(233,213,255,0.22)",
-              backdropFilter: "blur(14px)",
-              WebkitBackdropFilter: "blur(14px)",
-              textShadow: "0 2px 10px rgba(0,0,0,0.65)",
-              maxWidth: "90%",
+              backgroundColor: "rgba(0,0,0,0.28)",
+              textShadow: "0 2px 8px rgba(0,0,0,0.6)",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -1183,4 +1238,192 @@ const CenterOverlay: React.FC<CenterOverlayProps> = ({
       ) : null}
     </div>
   );
+};
+
+
+// ---------------------------------------------------------------------------
+// 2026-09-25 beat timeline layers (chapter / stat / diagram / bullets / chart /
+// b-roll) + rotating backdrops. Rendered below the karaoke SubtitleBand.
+// ---------------------------------------------------------------------------
+
+const BEAT_FADE_MS = 380;
+const BACKDROP_XFADE_MS = 900;
+
+const beatOpacity = (b: { show_ms: number; hide_ms: number }, currentMs: number): number => {
+  const fin = interpolate(currentMs, [b.show_ms, b.show_ms + BEAT_FADE_MS], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  const fout = interpolate(currentMs, [b.hide_ms - BEAT_FADE_MS, b.hide_ms], [1, 0], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  return Math.min(fin, fout);
+};
+
+const BackdropLayer: React.FC<{
+  backdrops: BackdropEntry[];
+  currentMs: number;
+  kenBurnsFallback: number;
+}> = ({ backdrops, currentMs, kenBurnsFallback }) => {
+  return (
+    <AbsoluteFill>
+      {backdrops.map((b, i) => {
+        const visible = currentMs >= b.start_ms - 50 && currentMs < b.end_ms + BACKDROP_XFADE_MS;
+        if (!visible || !b.photo_url) return null;
+        const op =
+          i === 0
+            ? 1
+            : interpolate(currentMs, [b.start_ms, b.start_ms + BACKDROP_XFADE_MS], [0, 1], {
+                extrapolateLeft: "clamp",
+                extrapolateRight: "clamp",
+              });
+        const span = Math.max(1, b.end_ms - b.start_ms);
+        const t = Math.max(0, Math.min(1, (currentMs - b.start_ms) / span));
+        const scale = backdrops.length === 1 ? kenBurnsFallback : 1.02 + 0.07 * t;
+        const panX = (i % 2 === 0 ? -1 : 1) * 1.2 * t;
+        return (
+          <AbsoluteFill key={i} style={{ opacity: op }}>
+            <Img
+              src={b.photo_url}
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                transform: `scale(${scale}) translateX(${panX}%)`,
+                transformOrigin: "center",
+              }}
+            />
+          </AbsoluteFill>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};
+
+const BrollCut: React.FC<{ beat: BeatEntry; currentMs: number; index: number }> = ({
+  beat,
+  currentMs,
+  index,
+}) => {
+  const span = Math.max(1, beat.hide_ms - beat.show_ms);
+  const t = Math.max(0, Math.min(1, (currentMs - beat.show_ms) / span));
+  const dir = index % 2 === 0 ? 1 : -1;
+  const scale = 1.05 + 0.09 * t;
+  const panX = dir * (2.2 * t - 1.1);
+  return (
+    <AbsoluteFill style={{ opacity: beatOpacity(beat, currentMs) }}>
+      <Img
+        src={beat.photo_url as string}
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          transform: `scale(${scale}) translateX(${panX}%)`,
+          transformOrigin: "center",
+        }}
+      />
+      <AbsoluteFill
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0) 30%, rgba(0,0,0,0.12) 60%, rgba(0,0,0,0.55) 100%)",
+        }}
+      />
+    </AbsoluteFill>
+  );
+};
+
+const BeatsLayer: React.FC<{
+  beats: BeatEntry[];
+  currentMs: number;
+  fallbackColor: string;
+}> = ({ beats, currentMs, fallbackColor }) => {
+  const nodes: React.ReactNode[] = [];
+  beats.forEach((b, i) => {
+    // Render with a little slack either side so fades complete.
+    if (currentMs < b.show_ms || currentMs >= b.hide_ms) return;
+    const localMs = currentMs - b.show_ms;
+    const durationMs = Math.max(1, b.hide_ms - b.show_ms);
+    const color = b.speakerColor || fallbackColor;
+    const op = beatOpacity(b, currentMs);
+    if (b.type === "broll") {
+      if (b.photo_url) nodes.push(<BrollCut key={`b${i}`} beat={b} currentMs={currentMs} index={i} />);
+      return;
+    }
+    const stage: React.CSSProperties = {
+      position: "absolute",
+      top: 90,
+      left: 70,
+      right: 70,
+      bottom: 330,
+      pointerEvents: "none",
+    };
+    const progress = Math.max(0, Math.min(1, localMs / durationMs));
+    let inner: React.ReactNode = null;
+    if (b.type === "chapter") {
+      nodes.push(
+        <AbsoluteFill key={`c${i}`} style={{ opacity: op }}>
+          <ChapterTitleOverlay
+            title={b.title || ""}
+            subtitle={b.subtitle}
+            chapterNumber={b.chapter_number}
+            accent={b.accent || color}
+            localMs={localMs}
+            durationMs={durationMs}
+          />
+        </AbsoluteFill>,
+      );
+      return;
+    }
+    if (b.type === "stat") {
+      inner = (
+        <StatHero
+          label={b.label || ""}
+          value={b.value || ""}
+          subtext={b.subtext}
+          companions={b.companions}
+          localMs={localMs}
+          durationMs={durationMs}
+          speakerColor={color}
+        />
+      );
+    } else if (b.type === "diagram") {
+      inner = (
+        <DiagramOverlay
+          kind={b.kind || "pillars"}
+          title={b.title}
+          nodes={b.nodes}
+          center={b.center}
+          columns={b.columns}
+          localMs={localMs}
+          durationMs={durationMs}
+          speakerColor={color}
+        />
+      );
+    } else if (b.type === "bullets") {
+      inner = (
+        <BulletOverlay title={b.title || ""} items={b.items || []} progress={progress} speakerColor={color} />
+      );
+    } else if (b.type === "chart") {
+      inner = (
+        <ChartOverlay
+          title={b.title || ""}
+          data_points={b.data_points || []}
+          chart_type={b.chart_type || "growth"}
+          progress={progress}
+          speakerColor={color}
+        />
+      );
+    }
+    if (inner) {
+      nodes.push(
+        <AbsoluteFill key={`k${i}`} style={{ opacity: op }}>
+          {/* readability scrim under cards */}
+          <AbsoluteFill style={{ backgroundColor: "rgba(6,6,18,0.5)" }} />
+          <div style={stage}>{inner}</div>
+        </AbsoluteFill>,
+      );
+    }
+  });
+  return <>{nodes}</>;
 };

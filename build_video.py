@@ -9,6 +9,12 @@ Usage:
         --episode output/episode_quickbooks.json \
         --build-dir output/build_quickbooks \
         --out output/quickbooks-pain-points-001.mp4
+
+Short preview slices (no upload), e.g. two windows in global seconds:
+    python build_video.py --episode run/episode.json --build-dir run \
+        --out run/preview.mp4 --preview 225-270 --preview 508-560
+Plan only (writes visual_manifest.json + visual_plan_report.json):
+    python build_video.py --episode ... --build-dir ... --out x.mp4 --manifest-only
 """
 from __future__ import annotations
 
@@ -112,8 +118,12 @@ def render_one_clip(
     data: dict,
     duration_ms: int,
     out_path: Path,
+    frame_range: tuple[int, int] | None = None,
 ) -> None:
-    """Render a single Remotion composition to MP4."""
+    """Render a single Remotion composition to MP4.
+
+    frame_range=(a, b) renders only frames a..b (inclusive) of the clip; used
+    by --preview so a test slice doesn't render whole 5-minute segments."""
     frames = max(1, round(duration_ms / 1000 * FPS))
     props = {**data, "durationInFrames": frames}
 
@@ -130,6 +140,11 @@ def render_one_clip(
             f"--duration-in-frames={frames}",
             f"--fps={FPS}",
         ]
+        if frame_range is not None:
+            a, b = frame_range
+            a = max(0, min(frames - 1, int(a)))
+            b = max(a, min(frames - 1, int(b)))
+            raw_args.append(f"--frames={a}-{b}")
         # On Windows with shell=True, subprocess concatenates the list into a
         # single string for cmd.exe. Paths containing spaces (e.g. "PROJECT
         # GAKU") must be quoted so cmd.exe treats them as single tokens.
@@ -142,7 +157,7 @@ def render_one_clip(
             cwd=str(REMOTION_PKG_DIR),
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=1800,
         )
         if result.returncode != 0:
             print(f"  [render] STDERR:\n{result.stderr}", file=sys.stderr)
@@ -268,6 +283,77 @@ def compose_with_ffmpeg(
     print(f"  [compose] Done (concat) -> {out_path}", file=sys.stderr)
 
 
+def _parse_window(spec: str) -> tuple[float, float]:
+    a, _, b = spec.partition("-")
+    start, end = float(a), float(b)
+    if end <= start:
+        raise ValueError(f"bad --preview window {spec!r} (want START-END seconds)")
+    return start, end
+
+
+def render_preview(
+    visuals: list[dict],
+    audio_path: Path,
+    windows: list[tuple[float, float]],
+    visuals_dir: Path,
+    out_path: Path,
+) -> list[Path]:
+    """Render only the parts of the manifest that overlap each window (global
+    seconds) via Remotion --frames, hard-cut them together, mux the matching
+    audio slice, and concatenate windows into out_path. Returns window files."""
+    prev_dir = visuals_dir / "preview"
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    window_files: list[Path] = []
+    for wi, (ws, we) in enumerate(windows, 1):
+        w0, w1 = int(ws * 1000), int(we * 1000)
+        pieces: list[Path] = []
+        for v in sorted(visuals, key=lambda x: x.get("start_ms", 0)):
+            vs, ve = int(v.get("start_ms", 0)), int(v.get("end_ms", 0))
+            lo, hi = max(vs, w0), min(ve, w1)
+            if hi - lo < 100:
+                continue
+            fa = int(round((lo - vs) / 1000 * FPS))
+            fb = int(round((hi - vs) / 1000 * FPS)) - 1
+            piece = prev_dir / f"w{wi:02d}_{v['visual_id']}_{fa}-{fb}.mp4"
+            render_one_clip(v["template"], v.get("data", {}), ve - vs, piece, frame_range=(fa, fb))
+            pieces.append(piece)
+        if not pieces:
+            print(f"  [preview] window {ws}-{we}s overlaps no visuals; skipped", file=sys.stderr)
+            continue
+        wfile = prev_dir / f"window_{wi:02d}_{int(ws)}-{int(we)}s.mp4"
+        inputs: list[str] = []
+        chains: list[str] = []
+        for i, pth in enumerate(pieces):
+            inputs += ["-i", str(pth)]
+            chains.append(f"[{i}:v]scale=1920:1080,setsar=1,fps={FPS},setpts=PTS-STARTPTS[v{i}]")
+        concat = "".join(f"[v{i}]" for i in range(len(pieces))) + f"concat=n={len(pieces)}:v=1:a=0[vout]"
+        args = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+            *inputs,
+            "-ss", f"{ws:.3f}", "-t", f"{we - ws:.3f}", "-i", str(audio_path),
+            "-filter_complex", ";".join(chains + [concat]),
+            "-map", "[vout]", "-map", f"{len(pieces)}:a",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "128k", "-shortest", str(wfile),
+        ]
+        r = subprocess.run(args, capture_output=True, text=True, timeout=900)
+        if r.returncode != 0:
+            raise RuntimeError(f"preview window ffmpeg failed: {r.stderr[-1500:]}")
+        window_files.append(wfile)
+        print(f"  [preview] window {ws:.1f}-{we:.1f}s -> {wfile.name} ({len(pieces)} pieces)", file=sys.stderr)
+    if window_files:
+        lst = prev_dir / "concat.txt"
+        lst.write_text("".join(f"file '{w.as_posix()}'\n" for w in window_files), encoding="utf-8")
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-f", "concat", "-safe", "0",
+             "-i", str(lst), "-c", "copy", str(out_path)],
+            capture_output=True, text=True, timeout=600,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"preview concat failed: {r.stderr[-1500:]}")
+    return window_files
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build YouTube-ready MP4 from podcast episode.")
     parser.add_argument("--episode", help="Path to episode.json")
@@ -284,7 +370,26 @@ def main() -> int:
         action="store_true",
         help="Skip YouTube upload even if OAuth credentials are present (school listens, tests).",
     )
+    parser.add_argument(
+        "--reuse-manifest",
+        action="store_true",
+        help="Reuse <build-dir>/visual_manifest.json instead of re-planning (keeps Pexels picks).",
+    )
+    parser.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="Build visual_manifest.json + visual_plan_report.json and stop (no render, no upload).",
+    )
+    parser.add_argument(
+        "--preview",
+        action="append",
+        default=[],
+        metavar="START-END",
+        help="Render only this global-seconds window (repeatable) into --out. Implies --no-upload.",
+    )
     args = parser.parse_args()
+    if args.preview or args.manifest_only:
+        args.no_upload = True
 
     build_dir = Path(args.build_dir).resolve()
     out_path = Path(args.out).resolve()
@@ -347,19 +452,26 @@ def main() -> int:
 
     audio_path = build_dir / "episode.wav"
     if not audio_path.exists():
-        print(f"ERROR: episode.wav not found at {audio_path}", file=sys.stderr)
+        audio_path = build_dir / "podcast.wav"  # research_podcast run dirs
+    if not audio_path.exists():
+        print(f"ERROR: episode.wav / podcast.wav not found under {build_dir}", file=sys.stderr)
         return 1
 
     # Step 1: Build full visual manifest via visual_queue.
-    from visual_queue import build_visual_manifest
-    print("[1/3] Building visual manifest...", file=sys.stderr)
-    manifest = build_visual_manifest(
-        episode=episode,
-        clip_durations=clip_durations,
-        run_dir=build_dir,
-        pexels_key=os.environ.get("PEXELS_API_KEY"),
-        audio_path=audio_path,
-    )
+    manifest_path = build_dir / "visual_manifest.json"
+    if args.reuse_manifest and manifest_path.exists():
+        print(f"[1/3] Reusing {manifest_path}", file=sys.stderr)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    else:
+        from visual_queue import build_visual_manifest
+        print("[1/3] Building visual manifest...", file=sys.stderr)
+        manifest = build_visual_manifest(
+            episode=episode,
+            clip_durations=clip_durations,
+            run_dir=build_dir,
+            pexels_key=os.environ.get("PEXELS_API_KEY"),
+            audio_path=audio_path,
+        )
     total_ms = manifest["total_duration_ms"]
     visuals = manifest["visuals"]
     print(f"  Manifest: {len(visuals)} visuals, total {total_ms}ms ({total_ms/1000:.1f}s)", file=sys.stderr)
@@ -367,6 +479,15 @@ def main() -> int:
     if not visuals:
         print("ERROR: manifest produced no visuals", file=sys.stderr)
         return 1
+    if args.manifest_only:
+        print(f"  --manifest-only: wrote {manifest_path}", file=sys.stderr)
+        return 0
+    if args.preview:
+        windows = [_parse_window(w) for w in args.preview]
+        print(f"[preview] rendering {len(windows)} window(s) -> {out_path}", file=sys.stderr)
+        render_preview(visuals, audio_path, windows, visuals_dir, out_path)
+        print(f"\nDone! Preview: {out_path} (no upload)", file=sys.stderr)
+        return 0
 
     # Step 2: Render each visual clip via Remotion.
     print(f"[2/3] Rendering {len(visuals)} visual clips...", file=sys.stderr)

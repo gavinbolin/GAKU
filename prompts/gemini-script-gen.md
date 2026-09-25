@@ -208,8 +208,8 @@ Rules:
   items, each with a short `label` and a numeric `value`.
 
 These overlays are **independent of** the per-segment `visuals` array — both
-should be populated. Overlays decorate the segment's own runtime; `visuals`
-slot in between segments as standalone cards.
+should be populated. Both are now rendered **inside** the segment as timed
+beats (see "2026-09-25 beat renderer" at the end) — not as separate cards.
 
 ### Quotability flag
 
@@ -428,3 +428,28 @@ Additive — do **not** remove prior Kokoro / Gemini / GPU / narrator-prompt wor
 - No UI dead air waiting on animations.
 - Visual-heavy bias through 2026-09-25: every major beat needs a real visual
   (TitleCard/stat/diagram or grounded B-roll), not samey empty defaults.
+
+---
+
+## 2026-09-25 beat renderer (how your visuals are consumed)
+
+Additive. The video builder (visual_timeline.py) turns each segment's
+`visuals` + `overlays` into non-overlapping in-segment beats on top of
+rotating B-roll. Write for that:
+
+- Anchor each visual with `start_with_line` (preferred) or `start_after_line`
+  (both accepted) — the beat appears when that line is spoken.
+- Mid-episode `TitleCard` / `ChapterCard` = a chapter hit (5 s) at the start of
+  that segment. Give it a punchy `title` (≤ 6 words) and a `subtitle` hook
+  (the question or claim the chapter answers). Plan ~1 chapter per 5 min.
+- Every key number gets ONE big stat hit: emit it once (overlay `stat` or
+  `StatCallout`) on the line that speaks it. Don't repeat the same figure in
+  several overlays. Ranges stay strings ("25-35%"); `subtext` may carry
+  companion figures ("across 180 countries and 130 languages").
+- Keep `bullets` overlays short-lived (show/hide within ~3–6 lines). Long
+  windows are clipped so they can't mask stats.
+- For frameworks, processes, operating models, and readiness checklists,
+  prefer `FlowDiagram` (ordered steps) or `ConceptComparison` (two columns);
+  in bullet items prefer "Label: short detail" so they render as real
+  diagram nodes (flow / hub / pillars) instead of a text box.
+
