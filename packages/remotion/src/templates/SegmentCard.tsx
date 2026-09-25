@@ -545,7 +545,35 @@ const INACTIVE_WORD_COLOR = "#F5F0E8";
 /** Soft edges so adjacent karaoke words cross-fade instead of hard-cutting. */
 const KARAOKE_FADE_IN_MS = 140;
 const KARAOKE_FADE_OUT_MS = 180;
-const KARAOKE_SCALE_PEAK = 1.12;
+const KARAOKE_SCALE_PEAK = 1.1;
+const KARAOKE_FONT_PX = 52;
+/** Flex gap between word boxes (each box also carries its own grow padding). */
+const KARAOKE_WORD_GAP = 10;
+/**
+ * 2026-09-25 collision fix: every word box ALWAYS carries horizontal padding
+ * sized for its own peak grow, so a scaled active word never reaches its
+ * neighbours. The padding depends only on the word text (never on active
+ * state), so line breaks are identical whether or not a word is highlighted.
+ *
+ * Width is a deliberately generous estimate for the 800-weight UI font.
+ * transform:scale also scales the padding, so solve
+ *   pad >= (peak-1) * (w/2 + pad)  =>  pad >= (peak-1) * w / 2 / (2 - peak)
+ */
+const estimateKaraokeWordPx = (word: string): number => {
+  let em = 0;
+  for (const ch of word) {
+    if ("iljtfI.,;:'!|\u2019()[]\"".includes(ch)) em += 0.34;
+    else if ("r-".includes(ch)) em += 0.44;
+    else if ("\u2014\u2013mwMW@%".includes(ch)) em += 0.92;
+    else if (ch >= "A" && ch <= "Z") em += 0.7;
+    else em += 0.58;
+  }
+  return em * KARAOKE_FONT_PX + 4;
+};
+const karaokeGrowPadPx = (word: string): number =>
+  Math.ceil(
+    ((KARAOKE_SCALE_PEAK - 1) * estimateKaraokeWordPx(word)) / 2 / (2 - KARAOKE_SCALE_PEAK),
+  ) + 3;
 /** Side inset + caption width leave slack so peak-scale / weight never reflows wraps. */
 const KARAOKE_BAND_PAD_X = 140;
 const KARAOKE_CAPTION_MAX_WIDTH = "88%";
@@ -657,7 +685,8 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
           flexWrap: "wrap",
           alignItems: "center",
           justifyContent: "center",
-          gap: 18,
+          columnGap: KARAOKE_WORD_GAP,
+          rowGap: 18,
           maxWidth: KARAOKE_CAPTION_MAX_WIDTH,
         }}
       >
@@ -734,15 +763,17 @@ const SubtitleBand: React.FC<SubtitleBandProps> = ({
               ? `0 0 ${6 + 14 * eased}px rgba(${rgb}, ${glowAlpha}), 0 2px 10px rgba(0,0,0,0.9)`
               : "0 2px 12px rgba(0,0,0,0.95)";
 
+          // Fixed per-word grow padding (text-only, never active-dependent).
+          const growPad = karaokeGrowPadPx(w.word);
           return (
             <span
               key={i}
               style={{
-                fontSize: 52,
+                fontSize: KARAOKE_FONT_PX,
                 fontWeight,
                 color,
                 backgroundColor: "transparent",
-                padding: "0px 2px 4px 2px",
+                padding: `0px ${growPad}px 4px ${growPad}px`,
                 borderRadius: 0,
                 boxShadow: "none",
                 // Layout-stable grow: scale does not affect flex-wrap flow.

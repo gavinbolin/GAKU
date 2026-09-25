@@ -202,6 +202,42 @@ def test_planner_beats_no_overlap_dedupe_and_broll():
     assert report["summary"]["broll_pct_of_segments"] >= 30, report["summary"]
 
 
+# ------------------------------------------------ 2026-09-25 polish B: markdown
+def test_strip_markdown_keeps_words():
+    from text_clean import strip_markdown
+    assert strip_markdown("How do organizations actually *build* the foundation?") == \
+        "How do organizations actually build the foundation?"
+    assert strip_markdown("This is **really** big, _truly_, with `code`.") == "This is really big, truly, with code."
+    assert strip_markdown("***triple*** and dangling *star and bold** end") == "triple and dangling star and bold end"
+    assert strip_markdown("snake_case_name stays") == "snake_case_name stays"
+    src = "it's *not* about *tools*, it's **people**."
+    assert len(strip_markdown(src).split()) == len(src.split())
+
+
+def test_karaoke_words_have_no_markdown_and_keep_timing():
+    import visual_queue
+
+    episode = {"segments": [{"segment_id": "s01", "title": "T", "lines": [
+        {"line_id": "l1", "host_id": "A", "text": "How do teams actually *build* the **foundation** for that?"}]}]}
+    clips = {"clips": [{"line_id": "l1", "duration_ms": 3000}]}
+    heard = [("How", 0, 200), ("do", 200, 300), ("teams", 300, 600), ("actually", 600, 1000),
+             ("build", 1000, 1400), ("the", 1400, 1500), ("foundation", 1500, 2200),
+             ("for", 2200, 2400), ("that?", 2400, 2900)]
+    sys.modules["whisper_align"] = _fake_whisper(heard)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            wav = Path(td) / "podcast.wav"
+            wav.write_bytes(b"RIFF0000WAVE")
+            words = visual_queue.compute_word_timings(episode, clips, audio_path=wav)
+    finally:
+        sys.modules.pop("whisper_align", None)
+    shown = [w["word"] for w in words]
+    assert not any("*" in w or "_" in w for w in shown), shown
+    b = next(w for w in words if w["word"] == "build")
+    assert (b["start_ms"], b["end_ms"]) == (1000, 1400), b
+    assert episode["segments"][0]["lines"][0]["text"].count("*") == 6  # caller's episode untouched
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

@@ -117,6 +117,21 @@ def run_gaku(topic: str) -> Path:
     return DEFAULT_RESULTS
 
 
+def _strip_episode_markdown(episode: dict[str, Any], where: str) -> int:
+    """Remove markdown emphasis (*x*, **x**, _x_, `x`) from dialogue + card text
+    so neither TTS nor karaoke sees it. Words are kept, so alignment is 1:1."""
+    try:
+        from text_clean import clean_episode_markdown
+
+        n = clean_episode_markdown(episode)
+    except Exception as exc:  # never fatal
+        print(f"[podcast] warning: markdown strip failed ({where}): {exc!r}", file=sys.stderr)
+        return 0
+    if n:
+        print(f"[podcast] stripped markdown emphasis from {n} string(s) ({where})", file=sys.stderr)
+    return n
+
+
 def _extract_pdf_to_md(pdf_path: Path, out_parent: Path) -> Path:
     """Extract an article PDF's text into <out>/_source_pdfs/<stem>.md.
 
@@ -377,6 +392,8 @@ def main() -> int:
                 print(f"  raw response prefix: {(resp.get('raw_response') or '')[:200]!r}", file=sys.stderr)
                 return 3
 
+            _strip_episode_markdown(episode, "script")
+
             # Always save the Gemini-generated episode script into the run folder
             # so the run is fully reproducible from disk. --episode-out, if set,
             # additionally writes to a user-specified path.
@@ -457,6 +474,15 @@ def main() -> int:
                     )
             except Exception as exc:
                 print(f"[podcast] warning: fact-check step failed: {exc!r}", file=sys.stderr)
+
+        # Fact-check rewrites / --episode-in scripts can carry markdown too.
+        if _strip_episode_markdown(episode, "pre-TTS"):
+            try:
+                (out_dir / "episode.json").write_text(
+                    json.dumps(episode, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+            except OSError as exc:
+                print(f"[podcast] warning: failed to re-save episode.json: {exc}", file=sys.stderr)
 
         segments = episode.get("segments") or []
         line_count = sum(len(s.get("lines") or []) for s in segments)

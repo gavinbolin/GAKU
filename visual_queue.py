@@ -594,6 +594,7 @@ def compute_word_timings(
     Returned dicts have: word, speaker ("A"/"B"), start_ms, end_ms,
     segment_idx, line_idx.
     """
+    episode = _markdown_clean_copy(episode)
     durations = _load_clip_durations(clip_durations)
 
     aligned: list[dict[str, Any]] = []
@@ -701,6 +702,18 @@ def group_into_sentences(word_timings: list[dict[str, Any]]) -> list[dict[str, A
             })
             current = []
     return sentences
+
+
+def _markdown_clean_copy(episode: dict[str, Any]) -> dict[str, Any]:
+    """Deep copy with markdown emphasis stripped (text_clean). Word count and
+    order are preserved, so script-anchored karaoke alignment is unaffected."""
+    import copy
+
+    from text_clean import clean_episode_markdown
+
+    ep = copy.deepcopy(episode)
+    clean_episode_markdown(ep)
+    return ep
 
 
 def _strip_caption_markdown(text: str) -> str:
@@ -1245,6 +1258,8 @@ def build_visual_manifest(
                 audio_path = p
                 break
 
+    # Captions / cards never show markdown emphasis (*build*, **x**, `y`).
+    episode = _markdown_clean_copy(episode)
     seg_timings = compute_segment_timings(episode, clip_durations)
     word_timings = compute_word_timings(episode, clip_durations, audio_path=audio_path)
     # Pre-load durations once for per-segment overlay ms resolution.

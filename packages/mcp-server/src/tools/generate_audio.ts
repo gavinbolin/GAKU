@@ -88,9 +88,29 @@ export function applyLexicon(text: string, lexicon: LexiconEntry[], backend: str
   return out;
 }
 
+/**
+ * Strip markdown emphasis (*x*, **x**, _x_, `x`) so TTS never reads markers.
+ * Mirrors podcast-pipeline/text_clean.py strip_markdown (words are kept).
+ */
+export function stripMarkdown(text: string): string {
+  if (!text) return text ?? "";
+  let s = text.replace(/`/g, "");
+  if (!s.includes("*") && !s.includes("_")) return s;
+  const emphasis = [
+    /(?<![\w*])\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*(?![\w*])/g,
+    /(?<![\w*])\*\*(?=\S)(.+?)(?<=\S)\*\*(?![\w*])/g,
+    /(?<![\w*])\*(?=\S)(.+?)(?<=\S)\*(?![\w*])/g,
+    /(?<![\w_])__(?=\S)(.+?)(?<=\S)__(?![\w_])/g,
+    /(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?![\w_])/g,
+  ];
+  for (const re of emphasis) s = s.replace(re, "$1");
+  s = s.replace(/(?<!\S)[*_]+(?=\S)|(?<=\S)[*_]+(?!\S)/g, "");
+  s = s.replace(/\*/g, "");
+  return s.replace(/[ \t]{2,}/g, " ").trim();
+}
+
 function spokenCopy(episodeRaw: object, backend: string): { episode: object; changed: number } {
   const lexicon = loadLexicon();
-  if (lexicon.length === 0) return { episode: episodeRaw, changed: 0 };
   const copy = JSON.parse(JSON.stringify(episodeRaw)) as {
     segments?: { lines?: { text?: string }[] }[];
   };
@@ -98,7 +118,7 @@ function spokenCopy(episodeRaw: object, backend: string): { episode: object; cha
   for (const seg of copy.segments ?? []) {
     for (const line of seg.lines ?? []) {
       if (typeof line.text !== "string") continue;
-      const spoken = applyLexicon(line.text, lexicon, backend);
+      const spoken = applyLexicon(stripMarkdown(line.text), lexicon, backend);
       if (spoken !== line.text) {
         line.text = spoken;
         changed++;
@@ -116,7 +136,7 @@ export async function generateAudio(
   process.stderr.write(`[generate_audio] backend=${backend.name}\n`);
   const { episode, changed } = spokenCopy(episodeRaw, String(backend.name).toLowerCase());
   if (changed > 0) {
-    process.stderr.write(`[generate_audio] tts lexicon respelled ${changed} line(s) (TTS input only)\n`);
+    process.stderr.write(`[generate_audio] tts text normalized for ${changed} line(s) (lexicon/markdown; TTS input only)\n`);
   }
   return backend.generate(episode, outDir);
 }
