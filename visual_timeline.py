@@ -185,6 +185,37 @@ def _companions(subtext: str, main_value: str, seg_text: str) -> list[dict[str, 
     return out
 
 
+_STAT_SCALE_WORDS = ("trillion", "billion", "million", "thousand")
+_STAT_BARE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*([A-Za-z%]*)")
+
+
+def enrich_stat_value(value: str, spoken: str) -> str:
+    """Restore currency / scale words the planner dropped from a bare StatCallout
+    number, using the line that speaks it ("4" + "over $4 billion" -> "$4 billion";
+    "304million" -> "$304 million"). Non-bare values are returned unchanged."""
+    v = (value or "").strip()
+    m = _STAT_BARE_RE.fullmatch(v)
+    if not m:
+        return value
+    num, unit = m.group(1), m.group(2)
+    sm = re.search(
+        r"(?P<cur>[$\u20ac\u00a3])?\s*(?<![\d.])" + re.escape(num)
+        + r"(?!\.?\d|,\d)\s*(?P<scale>trillion|billion|million|thousand|percent|%)?",
+        spoken or "", re.I)
+    cur = (sm.group("cur") if sm else None) or ""
+    scale = ((sm.group("scale") if sm else None) or "").lower()
+    ul = unit.lower()
+    if ul == "percent":
+        unit, ul = "%", "%"
+    if not unit and scale:
+        unit = ul = "%" if scale in ("percent", "%") else scale
+    if ul == "%":
+        return f"{cur}{num}%"
+    if ul in _STAT_SCALE_WORDS:
+        return f"{cur}{num} {ul}"
+    return f"{cur}{num}{unit}"
+
+
 def collect_stats(
     episode: dict[str, Any],
     seg_lines: list[list[dict[str, Any]]],
@@ -257,6 +288,8 @@ def collect_stats(
                     spoken_idx = i
                     break
         idx = spoken_idx if spoken_idx is not None else max(0, min(len(lines) - 1, st["hint_idx"]))
+        if spoken_idx is not None:
+            st = {**st, "value": enrich_stat_value(st["value"], lines[spoken_idx]["text"])}
         kept.append({
             **st,
             "signature": sig,

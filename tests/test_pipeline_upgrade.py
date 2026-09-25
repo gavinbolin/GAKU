@@ -238,6 +238,18 @@ def test_karaoke_words_have_no_markdown_and_keep_timing():
     assert episode["segments"][0]["lines"][0]["text"].count("*") == 6  # caller's episode untouched
 
 
+# ------------------------------------------------ stat value enrichment (M7)
+def test_stat_value_restores_currency_and_scale():
+    import visual_timeline as vt
+    e = vt.enrich_stat_value
+    assert e("4", "Despite spending over $4 billion, it failed.") == "$4 billion"
+    assert e("304million", "a staggering $304 million write-down") == "$304 million"
+    assert e("90%", "cut deployment time by 90%") == "90%"
+    assert e("12", "12 percent of firms") == "12%"
+    assert e("Up to 6.9%", "up to 6.9%") == "Up to 6.9%"
+    assert e("4", "about 40 firms and 4 teams") == "4"
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
