@@ -409,6 +409,19 @@ def test_gemini_util_falls_back_on_quota():  # item 7
     assert meta["model"] == "m2" and out["claims"], meta
     assert calls[:2] == [("k1", "m1"), ("k2", "m1")]
 
+    # 404 on one key (retired for that project) must not skip the other keys
+    calls.clear()
+
+    def fake404(key, model, prompt, cfg):
+        calls.append((key, model))
+        if key == "k1":
+            raise Quota("404 This model models/m1 is no longer available to new users")
+        return '{"claims": [{"line_id": "l1"}]}'
+
+    out, meta = gu.generate_json("p", models=["m1"], keys=["k1", "k2"], call=fake404,
+                                 log=lambda s: None, sleep=lambda s: None)
+    assert meta["model"] == "m1" and meta["key_index"] == 1, meta
+
 
 if __name__ == "__main__":
     fails = 0

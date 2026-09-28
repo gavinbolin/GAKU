@@ -18,7 +18,9 @@ from typing import Any, Callable
 
 DEFAULT_FALLBACK_MODELS = [
     "gemini-3.5-flash",
+    "gemini-3.8-flash",       # suggested by the API's 404 for retired 2.5 models (2026-09-28)
     "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",  # suggested replacement for 2.5-flash-lite
     "gemini-2.5-flash-lite",
     "gemini-flash-latest",
 ]
@@ -102,11 +104,8 @@ def generate_json(
 
     call = call or _default_call
     for model_name in models:
-        model_dead = False
         waited_on_model = False  # wait at most once per model; a 2nd 429 after waiting ~= daily cap
         for ki, key in enumerate(keys):
-            if model_dead:
-                break
             for retry in range(2):  # one wait-and-retry for per-minute quota
                 try:
                     raw = call(key, model_name, prompt, cfg)
@@ -121,7 +120,8 @@ def generate_json(
                                      "error": f"{type(exc).__name__}: {str(exc)[:240]}"})
                     log(f"{model_name} key#{ki} failed ({kind}): {str(exc)[:160]}")
                     if kind == "not_found":
-                        model_dead = True
+                        # 404 can be per-key/project ("no longer available to new
+                        # users"), so try the remaining keys before giving up.
                         break
                     if kind == "quota_minute" and retry == 0 and not waited_on_model:
                         waited_on_model = True
