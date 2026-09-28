@@ -129,6 +129,16 @@
         }
       }
     },
+    "QuadrantAxis": {
+      "type": "object",
+      "required": ["label"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "low": { "type": "string" },
+        "high": { "type": "string" }
+      }
+    },
     "Overlay": {
       "type": "object",
       "required": [
@@ -143,7 +153,8 @@
           "enum": [
             "bullets",
             "stat",
-            "chart"
+            "chart",
+            "quadrant"
           ]
         },
         "show_at_line": {
@@ -176,6 +187,25 @@
         "chart_type": {
           "type": "string"
         },
+        "x_axis": { "$ref": "#/definitions/QuadrantAxis" },
+        "y_axis": { "$ref": "#/definitions/QuadrantAxis" },
+        "cells": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["label", "x", "y"],
+            "additionalProperties": false,
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "detail": { "type": "string" },
+              "x": { "enum": ["low", "high", 0, 1] },
+              "y": { "enum": ["low", "high", 0, 1] }
+            }
+          }
+        },
+        "highlight": { "type": ["string", "number", "null"] },
         "data_points": {
           "type": "array",
           "items": {

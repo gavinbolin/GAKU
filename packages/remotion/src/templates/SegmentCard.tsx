@@ -16,6 +16,7 @@ import {
   DiagramOverlay,
   type DiagramColumn,
   type DiagramNode,
+  type QuadrantData,
 } from "../components/overlays/DiagramOverlay";
 import { PodcastBackground } from "./PodcastBackground";
 
@@ -75,11 +76,18 @@ export interface BeatEntry {
   nodes?: DiagramNode[];
   center?: string;
   columns?: DiagramColumn[];
+  /** kind="quadrant": 2x2 strategy matrix (2026-09-28 item 2). */
+  quadrant?: QuadrantData;
   items?: string[];
   chart_type?: string;
   data_points?: { label: string; value: number }[];
   photo_url?: string;
   query?: string;
+  /** stat: card-relative ms when the number is spoken (count-up lands by then). */
+  land_ms?: number;
+  /** stat: planner verdict (false for ranges / limits / late cards => static snap). */
+  count_up?: boolean;
+  static?: boolean;
 }
 
 export interface BackdropEntry {
@@ -540,6 +548,16 @@ const SpeakerChip: React.FC<{
   );
 };
 
+// ---------------------------------------------------------------------------
+// LOCKED DEFAULTS (Gavin, 2026-09-28 item 8) -- karaoke + host colours.
+// No flags / props toggle these; every episode renders this way:
+//   * current-word karaoke: active word takes the SPEAKER's colour (host A/B
+//     colours come from PROJECT GAKU/voice_colors.json via visual_queue.
+//     voice_persona -- the single voice->colour registry),
+//   * grow via transform: scale() only (layout-stable, weight fixed at 800),
+//   * NO white pill / background box behind the active word.
+// See docs/visual-defaults.md before changing anything here.
+// ---------------------------------------------------------------------------
 const FALLBACK_ACCENT = "#7C3AED";
 const INACTIVE_WORD_COLOR = "#F5F0E8";
 /** Soft edges so adjacent karaoke words cross-fade instead of hard-cutting. */
@@ -1256,6 +1274,7 @@ const CenterOverlay: React.FC<CenterOverlayProps> = ({
           subtext={active.subtext}
           progress={progress}
           speakerColor={active.speakerColor}
+          localMs={currentMs - active.show_ms}
         />
       ) : null}
       {active.type === "chart" ? (
@@ -1416,6 +1435,8 @@ const BeatsLayer: React.FC<{
           localMs={localMs}
           durationMs={durationMs}
           speakerColor={color}
+          landMs={b.land_ms !== undefined ? b.land_ms - b.show_ms : undefined}
+          countUp={b.count_up !== undefined ? b.count_up : b.static ? false : undefined}
         />
       );
     } else if (b.type === "diagram") {
@@ -1426,6 +1447,7 @@ const BeatsLayer: React.FC<{
           nodes={b.nodes}
           center={b.center}
           columns={b.columns}
+          quadrant={b.quadrant}
           localMs={localMs}
           durationMs={durationMs}
           speakerColor={color}

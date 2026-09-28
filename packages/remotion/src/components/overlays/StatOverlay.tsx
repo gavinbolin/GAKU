@@ -7,6 +7,8 @@ export interface StatOverlayProps {
   subtext?: string;
   progress: number;
   speakerColor: string;
+  /** ms since the overlay appeared (count-up then finishes within 900 ms). */
+  localMs?: number;
 }
 
 /**
@@ -26,7 +28,27 @@ export interface StatOverlayProps {
  */
 
 // Range detector: hyphen / en-dash / em-dash bounds must stay static forever.
-const RANGE_RE = /\d\s*[-–—]\s*\d/;
+const RANGE_RE = /\d\s*(?:[-–—]|to)\s*\d/i;
+
+/**
+ * 2026-09-28 item 6: limits / approximations ("Up to 6.9%", "over $4 billion",
+ * "about 40%", "~40%", "10,000+") are NOT exact quantities -- counting up
+ * through them shows wrong values, so they always render as a static snap.
+ */
+export const QUALIFIER_RE =
+  /(?:^|\b)(?:up to|about|around|nearly|over|more than|less than|fewer than|almost|roughly|approximately|approx|at least|at most|as much as|as many as|as high as|as low as|under|above|below|close to|upwards of)\b|[~≈<>≤≥]|\d\+|\+\s*$/i;
+
+/** Leading qualifier words, split off so they can render as a small kicker. */
+export const LEADING_QUALIFIER_RE =
+  /^\s*(up to|about|around|nearly|over|more than|less than|fewer than|almost|roughly|approximately|at least|at most|as much as|as many as|as high as|as low as|under|above|below|close to|upwards of|~|≈)\s*/i;
+
+/** True when the value must never count up (range, limit, approximation, multi-number). */
+export const isStaticStat = (raw: string): boolean => {
+  const v = (raw || "").trim();
+  if (!v) return true;
+  if (RANGE_RE.test(v) || QUALIFIER_RE.test(v)) return true;
+  return (v.match(/\d[\d,]*(?:\.\d+)?/g) || []).length !== 1;
+};
 
 // 2026-09-25: thousands separators are grouping, not decimals. The old
 // parser read "10,000 versions" as 10.000 and rolled 0 -> 10 before snapping
@@ -61,7 +83,7 @@ const parseNumeric = (raw: string): ParsedNumeric | null => {
 /** Gate: count-up only when a single metric; must not invent a wrong prefix/bound. */
 export const isSimpleSingleNumber = (raw: string): boolean => {
   const trimmed = raw.trim();
-  if (!trimmed || RANGE_RE.test(trimmed)) return false;
+  if (!trimmed || RANGE_RE.test(trimmed) || isStaticStat(trimmed)) return false;
   const parsed = parseNumeric(trimmed);
   if (!parsed) return false;
   if (/\d/.test(parsed.suffix)) return false;
@@ -96,14 +118,19 @@ export const countUpAt = (value: string, t01: number): string => {
  * Formats the full number each frame; ranges/multi-number fall through to
  * the trimmed original via isSimpleSingleNumber.
  */
-export const countUpDisplay = (value: string, progress: number): string => {
+export const countUpDisplay = (value: string, progress: number, localMs?: number): string => {
   const trimmed = value.trim();
   if (!isSimpleSingleNumber(trimmed)) return trimmed;
   const parsed = parseNumeric(trimmed)!;
-  const t = interpolate(progress, [0, 0.12], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
+  // 2026-09-28 item 1: time-based (<= 900 ms) when the caller knows local ms,
+  // so a long overlay window can't stretch the count past the spoken value.
+  const t =
+    localMs !== undefined
+      ? Math.max(0, Math.min(1, localMs / 900))
+      : interpolate(progress, [0, 0.12], [0, 1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
   if (t >= 1) return trimmed;
   return `${parsed.prefix}${formatNumeric(parsed.num * t, parsed)}${parsed.suffix}`;
 };
@@ -114,6 +141,7 @@ export const StatOverlay: React.FC<StatOverlayProps> = ({
   subtext,
   progress,
   speakerColor,
+  localMs,
 }) => {
   // Card scales in from 0.8 -> 1.0 over the first 20% of the overlay window.
   // Slight overshoot at 0.15 gives a spring-like pop without being tied to
@@ -131,7 +159,7 @@ export const StatOverlay: React.FC<StatOverlayProps> = ({
 
   // Gavin 2026-09-24: simple single numbers count up; ranges/multi stay static.
   const displayValue = isSimpleSingleNumber(value)
-    ? countUpDisplay(value, progress)
+    ? countUpDisplay(value, progress, localMs)
     : value.trim();
 
   return (

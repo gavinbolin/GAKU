@@ -193,7 +193,7 @@ Rules:
 
 - 1–3 overlays per segment. Don't pad — only include overlays that genuinely
   help a viewer follow the topic at that moment.
-- `type` is exactly `"bullets"`, `"stat"`, or `"chart"`.
+- `type` is exactly `"bullets"`, `"stat"`, `"chart"`, or `"quadrant"` (see below).
 - `show_at_line` / `hide_at_line` are **1-based line indices within this
   segment** — they bracket the lines during which the overlay is visible.
   Base them on when the topic is actively being discussed: an overlay about
@@ -206,6 +206,43 @@ Rules:
   number coercion). `subtext` is optional.
 - `chart.chart_type` is currently always `"growth"`. `data_points` is 3–8
   items, each with a short `label` and a numeric `value`.
+
+#### 2026-09-28: `quadrant` overlay (2x2 strategy matrices)
+
+When the source defines **two axes that produce four named strategies/types**
+(e.g. value-chain control × technological breadth → four AI strategies),
+emit ONE `quadrant` overlay in the segment that introduces the framework:
+
+```json
+{
+  "type": "quadrant",
+  "title": "Four AI Strategies",
+  "x_axis": { "label": "Value-Chain Control", "low": "Low", "high": "High" },
+  "y_axis": { "label": "Technological Breadth", "low": "Narrow", "high": "Broad" },
+  "cells": [
+    { "label": "Focused Differentiation", "x": "low",  "y": "low" },
+    { "label": "Vertical Integration",    "x": "high", "y": "low" },
+    { "label": "Collaborative Ecosystem", "x": "low",  "y": "high" },
+    { "label": "Platform Leadership",     "x": "high", "y": "high" }
+  ],
+  "show_at_line": 2,
+  "hide_at_line": 8
+}
+```
+
+- Axis and cell labels come **from the source** — never invent a matrix for
+  content that isn't a 2x2 framework. Segments about a single quadrant may
+  repeat the overlay with `"highlight": "<that cell's label>"`.
+- Bullets stay the default everywhere else; don't turn lists into quadrants.
+- The recap segment includes a bullets overlay titled **"Key Takeaways"**
+  (rendered as the Key Takeaways pillars card).
+
+#### 2026-09-28: don't retell the hook
+
+The cold-open hook tells its story once. The next segment references it in
+at most one short callback line ("that GM-vs-Apple contrast") and moves on to
+new material — no second retelling of the same case or its numbers. The
+pipeline runs `script_dedupe.py` after synthesis to catch heavy overlap.
 
 These overlays are **independent of** the per-segment `visuals` array — both
 should be populated. Both are now rendered **inside** the segment as timed

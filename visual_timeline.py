@@ -34,8 +34,18 @@ from typing import Any, Callable
 import broll_queries as bq
 
 CHAPTER_MS = 5000
-STAT_MS = 6500
-STAT_WITH_COMPANIONS_MS = 8000
+# 2026-09-28 items 1+5: a StatHero appears STAT_LEAD_MS before the number is
+# spoken so a count-up can finish (or the static value snap in) at/before the
+# spoken word, then stays fully readable for >= STAT_MIN_HOLD_MS after landing.
+STAT_LEAD_MS = 1400
+STAT_MAX_EARLY_MS = 600          # placement may pull a hero this much earlier
+STAT_FADE_OUT_MS = 400
+STAT_MIN_HOLD_MS = 4500          # readable time after the value lands
+STAT_LONG_HOLD_MS = 5200         # money / "up to" / long labels
+STAT_MS = STAT_LEAD_MS + STAT_MAX_EARLY_MS + STAT_MIN_HOLD_MS + STAT_FADE_OUT_MS   # 6900
+STAT_WITH_COMPANIONS_MS = STAT_MS + 1500
+QUADRANT_MS = 12000
+QUADRANT_HIGHLIGHT_MS = 8000
 CHART_MS = 13000
 QUOTE_MS = 7000
 CARD_PAD_MS = 700
@@ -45,6 +55,28 @@ BACKDROP_EVERY_MS = 55_000
 
 _NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _RANGE_RE = re.compile(r"\d\s*(?:[-–—]|to)\s*\d")
+# 2026-09-28 item 6: limits / approximations are never counted up (static snap).
+_QUALIFIER_WORDS = (
+    "up to", "about", "around", "nearly", "over", "more than", "less than", "fewer than",
+    "almost", "roughly", "approximately", "approx", "at least", "at most", "as much as",
+    "as many as", "as high as", "as low as", "under", "above", "below", "close to", "upwards of",
+)
+_QUALIFIER_RE = re.compile(
+    r"(?:^|\b)(?:" + "|".join(re.escape(w) for w in _QUALIFIER_WORDS) + r")\b|[~≈<>≤≥]|\+\s*$|\d\+",
+    re.I,
+)
+
+
+def stat_is_static(value: str) -> bool:
+    """True when a stat must render as a static snap/fade of the full string:
+    ranges ("5-10%", "3 to 5x"), limits / approximations ("Up to 6.9%",
+    "over $4 billion", "~40%", "10,000+"), or multiple numbers."""
+    v = (value or "").strip()
+    if not v:
+        return True
+    if _RANGE_RE.search(v) or _QUALIFIER_RE.search(v):
+        return True
+    return len(_NUM_RE.findall(v)) != 1
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +221,18 @@ _STAT_SCALE_WORDS = ("trillion", "billion", "million", "thousand")
 _STAT_BARE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*([A-Za-z%]*)")
 
 
+_SPOKEN_QUALIFIER_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in sorted(_QUALIFIER_WORDS, key=len, reverse=True)) + r")\s*$",
+    re.I,
+)
+
+
 def enrich_stat_value(value: str, spoken: str) -> str:
     """Restore currency / scale words the planner dropped from a bare StatCallout
-    number, using the line that speaks it ("4" + "over $4 billion" -> "$4 billion";
-    "304million" -> "$304 million"). Non-bare values are returned unchanged."""
+    number, using the line that speaks it ("4" + "over $4 billion" -> "Over $4 billion";
+    "304million" -> "$304 million"). A limit / approximation spoken right before
+    the number ("up to 90%") is kept too, so the hero renders static (item 6).
+    Non-bare values are returned unchanged."""
     v = (value or "").strip()
     m = _STAT_BARE_RE.fullmatch(v)
     if not m:
@@ -204,16 +244,22 @@ def enrich_stat_value(value: str, spoken: str) -> str:
         spoken or "", re.I)
     cur = (sm.group("cur") if sm else None) or ""
     scale = ((sm.group("scale") if sm else None) or "").lower()
+    qual = ""
+    if sm:
+        qm = _SPOKEN_QUALIFIER_RE.search((spoken or "")[: sm.start()])
+        if qm:
+            qual = qm.group(1).lower()
+            qual = qual[0].upper() + qual[1:] + " "
     ul = unit.lower()
     if ul == "percent":
         unit, ul = "%", "%"
     if not unit and scale:
         unit = ul = "%" if scale in ("percent", "%") else scale
     if ul == "%":
-        return f"{cur}{num}%"
+        return f"{qual}{cur}{num}%"
     if ul in _STAT_SCALE_WORDS:
-        return f"{cur}{num} {ul}"
-    return f"{cur}{num}{unit}"
+        return f"{qual}{cur}{num} {ul}"
+    return f"{qual}{cur}{num}{unit}"
 
 
 def collect_stats(
@@ -294,7 +340,7 @@ def collect_stats(
             **st,
             "signature": sig,
             "line_idx": idx,
-            "is_range": bool(_RANGE_RE.search(st["value"])),
+            "is_range": stat_is_static(st["value"]),
             "companions": _companions(st["subtext"], st["value"], seg_text),
             "duplicates": [],
         })
@@ -388,6 +434,7 @@ _FLOW_RE = re.compile(r"steps?\b|process|how to|roadmap|stages?\b|phases?\b|jour
 _PILLAR_RE = re.compile(r"framework|pillars?|takeaways?|principles|strateg|keys?\b|elements|foundations?|levers|components|leading|examples|companies|benefits|advantages", re.I)
 _GOAL_RE = re.compile(r"goal|shared|outcome|result|north star", re.I)
 _TAKEAWAY_RE = re.compile(r"takeaways?|pillars?|framework|principles", re.I)
+KEY_TAKEAWAYS_RE = re.compile(r"\b(key\s+)?take-?aways?\b|\bkey lessons\b", re.I)
 _IMPERATIVE = {
     "make", "structure", "prioritize", "map", "reframe", "prompt", "designate", "build", "foster",
     "shift", "define", "pilot", "measure", "scale", "launch", "curate", "identify", "assess", "align",
@@ -418,6 +465,11 @@ def bullets_to_diagram(title: str, items: list[str], used_kinds: set[str]) -> di
     pairs = [_split_label(i) for i in items]
     labeled = sum(1 for _l, d in pairs if d)
     kind = None
+    if KEY_TAKEAWAYS_RE.search(title or ""):
+        # Locked default (2026-09-28 item 9): the closing "Key Takeaways" card
+        # is always the multi-box pillars card, even if pillars was used earlier.
+        nodes = [{"label": _truncate(lab, 44 if det else 64), "detail": _truncate(det, 70)} for lab, det in pairs]
+        return {"kind": "pillars", "title": title, "nodes": nodes[:6], "center": ""}
     if _HUB_RE.search(title or ""):
         kind = "hub"
     elif _FLOW_RE.search(title or ""):
@@ -489,15 +541,32 @@ def _visual_to_card(v: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _stat_needs_long_hold(card: dict[str, Any]) -> bool:
+    v = str(card.get("value") or "")
+    return bool(re.search(r"[$€£]|million|billion|trillion", v, re.I)) or stat_is_static(v) \
+        or len(str(card.get("label") or "")) > 34
+
+
+def stat_hold_ms(beat: dict[str, Any]) -> int:
+    """Fully-readable time after the value lands (count done / static snapped)."""
+    show, hide = int(beat["show_ms"]), int(beat["hide_ms"])
+    land = int(beat.get("land_ms", show))
+    landed = max(show + 450, land)   # fade-in finished and value final
+    return (hide - STAT_FADE_OUT_MS) - landed
+
+
 def _card_duration(card: dict[str, Any]) -> int:
     t = card["type"]
     if t == "chapter":
         return CHAPTER_MS
     if t == "stat":
-        return STAT_WITH_COMPANIONS_MS if card.get("companions") else STAT_MS
+        base = STAT_WITH_COMPANIONS_MS if card.get("companions") else STAT_MS
+        return base + (STAT_LONG_HOLD_MS - STAT_MIN_HOLD_MS if _stat_needs_long_hold(card) else 0)
     if t == "chart":
         return CHART_MS
     if t == "diagram":
+        if card.get("kind") == "quadrant":
+            return QUADRANT_HIGHLIGHT_MS if (card.get("quadrant") or {}).get("highlight") is not None else QUADRANT_MS
         if card.get("kind") in ("quote", "definition"):
             return QUOTE_MS
         n = len(card.get("nodes") or card.get("columns") or [])
@@ -506,6 +575,248 @@ def _card_duration(card: dict[str, Any]) -> int:
         n = len(card.get("items") or [])
         return int(_clamp(3000 + 2000 * n, 8000, 14000))
     return 8000
+
+
+# ---------------------------------------------------------------------------
+# 2x2 strategy quadrant (2026-09-28 item 2)
+# ---------------------------------------------------------------------------
+#
+# Framework articles often cross two dimensions into four strategies / types
+# (Bouquet et al.: value-chain control x technological breadth). The planner
+# emits a QuadrantOverlay (DiagramOverlay kind="quadrant") when the SCRIPT
+# grounds all of it -- nothing is invented:
+#   1. a script `quadrant` overlay (the prompt asks Gemini for one), or
+#   2. a heuristic: two named axes (a "two dimensions / axes" bullets card or
+#      quoted names) + four named strategies whose position is stated as
+#      high/low on BOTH axes (bullets like "Low value-chain control" or a line
+#      like "...applies to companies with low X and low Y").
+# Only a complete, consistent 2x2 (four distinct cells) is used.
+
+_AXES_TITLE_RE = re.compile(r"\b(two|2)\b.{0,40}\b(dimensions?|axes|axis|factors|forces|drivers|variables|lenses)\b", re.I)
+_HIGH_WORDS = ("high", "higher", "strong", "stronger", "extensive", "broad", "broader", "wide", "deep",
+               "greater", "significant", "tight", "full", "heavy", "considerable", "great", "much")
+_LOW_WORDS = ("low", "lower", "limited", "narrow", "narrower", "weak", "weaker", "little", "minimal",
+              "modest", "less", "light", "small", "restricted")
+_LEVEL_RE = re.compile(r"\b(" + "|".join(_HIGH_WORDS + _LOW_WORDS) + r")\b", re.I)
+_STRATEGY_PREFIX_RE = re.compile(r"^\s*(?:strategy|type|quadrant|option|approach|play)\s*(?:\d+|[ivx]+)?\s*[:.\-–—]\s*", re.I)
+
+
+def _axis_norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower().replace("-", " ")).strip()
+
+
+def _axis_clean(item: str) -> str:
+    t = re.sub(r"^\s*(high|low)\s*[:\-–—]\s*", "", str(item or ""), flags=re.I)
+    t = _split_label(t)[0] if ":" in t else t
+    return re.sub(r"\s+", " ", t).strip(" .\"'‘’“”")
+
+
+def _axis_pattern(axis: str) -> re.Pattern[str]:
+    words = [w for w in _axis_norm(axis).split() if w]
+    return re.compile(r"\b" + r"[\s\-]+".join(re.escape(w) for w in words) + r"\b", re.I)
+
+
+def _level_before(text: str, pos: int) -> str | None:
+    """high/low for the level word within ~4 words before an axis mention."""
+    window = text[max(0, pos - 48): pos]
+    hits = list(_LEVEL_RE.finditer(window))
+    if not hits:
+        return None
+    tail = window[hits[-1].end():]
+    if len(re.findall(r"[A-Za-z]+", tail)) > 2:
+        return None
+    return "high" if hits[-1].group(1).lower() in _HIGH_WORDS else "low"
+
+
+def _levels_in(text: str, axes: list[str]) -> tuple[str | None, str | None]:
+    out: list[str | None] = []
+    for ax in axes:
+        lvl = None
+        for m in _axis_pattern(ax).finditer(text or ""):
+            lvl = _level_before(text, m.start())
+            if lvl:
+                break
+        out.append(lvl)
+    return out[0], out[1]
+
+
+def _strategy_name(raw: str) -> str:
+    t = _STRATEGY_PREFIX_RE.sub("", str(raw or "")).strip()
+    t = re.sub(r"\s+(strategy|strategies|approach|quadrant)$", "", t, flags=re.I)
+    return t.strip(" .\"'‘’“”:")
+
+
+def _find_axes(episode: dict[str, Any]) -> tuple[list[str], int] | None:
+    segs = episode.get("segments") or []
+    for si, seg in enumerate(segs):
+        for ov in seg.get("overlays") or []:
+            if not isinstance(ov, dict) or ov.get("type") != "bullets":
+                continue
+            items = [str(x) for x in (ov.get("items") or []) if str(x).strip()]
+            if len(items) == 2 and _AXES_TITLE_RE.search(str(ov.get("title") or "")):
+                axes = [_axis_clean(i) for i in items]
+                if all(2 <= len(a) <= 40 for a in axes):
+                    return axes, si
+    # Fallback: "two ... dimensions" line + the first two quoted terms nearby.
+    for si, seg in enumerate(segs):
+        text = " ".join(str(ln.get("text") or "") for ln in seg.get("lines") or [])
+        if not _AXES_TITLE_RE.search(text):
+            continue
+        quoted = []
+        for m in re.finditer(r"['\"‘“]([A-Za-z][A-Za-z\- ]{3,38})['\"’”]", text):
+            q = m.group(1).strip()
+            if 1 <= len(q.split()) <= 4 and _axis_norm(q) not in {_axis_norm(x) for x in quoted}:
+                quoted.append(q)
+        if len(quoted) >= 2:
+            return quoted[:2], si
+    return None
+
+
+def _script_quadrant(seg: dict[str, Any]) -> dict[str, Any] | None:
+    for ov in seg.get("overlays") or []:
+        if isinstance(ov, dict) and ov.get("type") == "quadrant":
+            q = normalize_quadrant(ov)
+            if q:
+                return {**q, "_ov": ov}
+    return None
+
+
+def normalize_quadrant(ov: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate a script `quadrant` overlay -> {x_axis, y_axis, cells[4]}."""
+    xa, ya = ov.get("x_axis") or {}, ov.get("y_axis") or {}
+    if isinstance(xa, str):
+        xa = {"label": xa}
+    if isinstance(ya, str):
+        ya = {"label": ya}
+    if not (xa.get("label") and ya.get("label")):
+        return None
+    cells = []
+    seen = set()
+    for c in ov.get("cells") or []:
+        if not isinstance(c, dict) or not c.get("label"):
+            continue
+        x = 1 if str(c.get("x", "")).lower() in ("high", "1", "right") else 0
+        y = 1 if str(c.get("y", "")).lower() in ("high", "1", "top") else 0
+        if (x, y) in seen:
+            return None
+        seen.add((x, y))
+        cells.append({"label": _truncate(str(c["label"]), 34), "detail": _truncate(str(c.get("detail") or ""), 60),
+                      "x": x, "y": y})
+    if len(cells) != 4:
+        return None
+    return {
+        "x_axis": {"label": _truncate(str(xa["label"]), 40), "low": str(xa.get("low") or "Low"), "high": str(xa.get("high") or "High")},
+        "y_axis": {"label": _truncate(str(ya["label"]), 40), "low": str(ya.get("low") or "Low"), "high": str(ya.get("high") or "High")},
+        "cells": cells,
+    }
+
+
+def detect_quadrant(episode: dict[str, Any], seg_lines: list[list[dict[str, Any]]]) -> dict[str, Any] | None:
+    """Return a grounded 2x2 plan or None.
+
+    {"x_axis", "y_axis", "cells": [{label, detail, x, y}], "source",
+     "intro": (seg_idx, line_idx), "positions": {(si, ov_idx|None): (cell_idx, line_idx)},
+     "presence": {(si, ov_idx): {cell_idx: detail}}}
+    """
+    segs = episode.get("segments") or []
+    for si, seg in enumerate(segs):
+        q = _script_quadrant(seg)
+        if q:
+            ov = q.pop("_ov")
+            lines = seg_lines[si]
+            idx = max(0, min(len(lines) - 1, _ov_line_idx(ov, "show_at_line", lines, 0))) if lines else 0
+            q.update({"source": "script", "intro": (si, idx), "positions": {}, "presence": {},
+                      "title": str(ov.get("title") or ""), "consumed": {(si, (seg.get("overlays") or []).index(ov))}})
+            return q
+    found = _find_axes(episode)
+    if not found:
+        return None
+    axes, axis_seg = found
+    cells: dict[tuple[int, int], dict[str, Any]] = {}
+    positions: dict[tuple[int, Any], tuple[tuple[int, int], int]] = {}
+    for si, seg in enumerate(segs):
+        lines = seg_lines[si]
+        # (a) bullets card listing the levels ("Low value-chain control", "High technological breadth").
+        for oi, ov in enumerate(seg.get("overlays") or []):
+            if not isinstance(ov, dict) or ov.get("type") != "bullets":
+                continue
+            items = [str(x) for x in (ov.get("items") or []) if str(x).strip()]
+            lx, ly = _levels_in(" ; ".join(items), axes)
+            if not (lx and ly):
+                continue
+            name = _strategy_name(str(ov.get("title") or seg.get("title") or ""))
+            if not name or _axis_pattern(axes[0]).search(name) or _axis_pattern(axes[1]).search(name):
+                name = _strategy_name(str(seg.get("title") or ""))
+            if not name:
+                continue
+            extras = [i for i in items if not (_axis_pattern(axes[0]).search(i) or _axis_pattern(axes[1]).search(i))]
+            key = (1 if lx == "high" else 0, 1 if ly == "high" else 0)
+            if key in cells and _axis_norm(cells[key]["label"]) != _axis_norm(name):
+                return None   # contradictory -> don't guess
+            cells.setdefault(key, {"label": _truncate(name, 34), "detail": _truncate(extras[0], 60) if extras else ""})
+            i0 = max(0, min(len(lines) - 1, _ov_line_idx(ov, "show_at_line", lines, 0))) if lines else 0
+            positions[(si, oi)] = (key, i0)
+        # (b) a spoken line stating both levels; name from quotes / segment title.
+        for ln in lines:
+            lx, ly = _levels_in(ln["text"], axes)
+            if not (lx and ly):
+                continue
+            key = (1 if lx == "high" else 0, 1 if ly == "high" else 0)
+            qn = re.search(r"[\"“‘']([A-Z][A-Za-z\- ]{3,34})[.,]?[\"”’']", ln["text"])
+            name = _strategy_name(qn.group(1)) if qn else _strategy_name(str(seg.get("title") or ""))
+            if not name or name.lower().startswith(("segment", "part")):
+                continue
+            if key not in cells:
+                cells[key] = {"label": _truncate(name, 34), "detail": ""}
+            if not any(k[0] == si for k in positions):
+                positions[(si, None)] = (key, ln["idx"])
+            break
+    if len(cells) != 4:
+        return None
+    order = [(0, 0), (1, 0), (0, 1), (1, 1)]
+    cell_list = [{**cells[k], "x": k[0], "y": k[1]} for k in order]
+    idx_of = {k: i for i, k in enumerate(order)}
+    # Intro: last line of the axes segment that names both axes (else its middle).
+    lines = seg_lines[axis_seg]
+    both = [ln["idx"] for ln in lines if _axis_pattern(axes[0]).search(ln["text"]) and _axis_pattern(axes[1]).search(ln["text"])]
+    intro_line = both[-1] if both else (len(lines) // 2 if lines else 0)
+    # "Presence" cards: bullets whose items name >= 3 of the 4 strategies.
+    presence: dict[tuple[int, int], dict[int, str]] = {}
+    for si, seg in enumerate(segs):
+        for oi, ov in enumerate(seg.get("overlays") or []):
+            if not isinstance(ov, dict) or ov.get("type") != "bullets" or (si, oi) in positions:
+                continue
+            det: dict[int, str] = {}
+            for it in ov.get("items") or []:
+                for k, c in cells.items():
+                    if _axis_pattern(c["label"]).search(str(it)):
+                        rest = re.sub(_axis_pattern(c["label"]).pattern, "", str(it), flags=re.I)
+                        det[idx_of[k]] = _truncate(rest.strip(" ()-–—:,"), 40)
+            if len(det) >= 3:
+                presence[(si, oi)] = det
+    return {
+        "x_axis": {"label": _truncate(axes[0], 40), "low": "Low", "high": "High"},
+        "y_axis": {"label": _truncate(axes[1], 40), "low": "Low", "high": "High"},
+        "cells": cell_list,
+        "source": "heuristic",
+        "intro": (axis_seg, intro_line),
+        "positions": {k: (idx_of[v[0]], v[1]) for k, v in positions.items()},
+        "presence": presence,
+        "title": "",
+        "consumed": set(),
+    }
+
+
+def quadrant_card(q: dict[str, Any], *, title: str = "", highlight: int | None = None,
+                  details: dict[int, str] | None = None) -> dict[str, Any]:
+    cells = [dict(c) for c in q["cells"]]
+    if details:
+        for i, d in details.items():
+            if d:
+                cells[i]["detail"] = d
+    ttl = title or q.get("title") or f"{q['x_axis']['label']} × {q['y_axis']['label']}"
+    return {"type": "diagram", "kind": "quadrant", "title": _truncate(ttl, 70),
+            "quadrant": {"x_axis": q["x_axis"], "y_axis": q["y_axis"], "cells": cells, "highlight": highlight}}
 
 
 # ---------------------------------------------------------------------------
@@ -571,14 +882,28 @@ def plan_episode(
     seg_durs = [int(t["duration_ms"]) for t in seg_timings]
     stats = collect_stats(episode, seg_lines)
     chapters = pick_chapters(episode, seg_lines, seg_durs, total_ms, stats, clean_title)
+    try:
+        quad = detect_quadrant(episode, seg_lines)
+    except Exception as exc:  # never fatal
+        log(f"[plan] quadrant detection failed: {exc!r}")
+        quad = None
 
     words_by_seg: dict[int, list[dict[str, Any]]] = {}
     for w in word_timings:
         words_by_seg.setdefault(int(w.get("segment_idx", -1)), []).append(w)
 
     recent_queries: list[str] = []
+    case_uses: dict[str, int] = {}
     per_segment: list[dict[str, Any]] = []
-    report = {"segments": [], "stats": [], "chapters": [], "broll": [], "backdrops": [], "dropped": []}
+    report = {"segments": [], "stats": [], "chapters": [], "broll": [], "backdrops": [], "dropped": [],
+              "quadrant": None}
+    if quad:
+        report["quadrant"] = {"source": quad["source"], "x_axis": quad["x_axis"]["label"],
+                              "y_axis": quad["y_axis"]["label"],
+                              "cells": [{"label": c["label"], "x": c["x"], "y": c["y"]} for c in quad["cells"]],
+                              "intro_segment": quad["intro"][0] + 1}
+        log(f"[plan] 2x2 quadrant: {quad['x_axis']['label']} x {quad['y_axis']['label']} -> "
+            + ", ".join(c["label"] for c in quad["cells"]) + f" ({quad['source']})")
     salt = 0
 
     for si, seg in enumerate(segs):
@@ -596,16 +921,40 @@ def plan_episode(
         for st in (s for s in stats if s["seg_idx"] == si):
             ln = lines[st["line_idx"]] if lines else {"start": cs, "end": cs, "idx": 0, "text": ""}
             spoken_ms = _number_spoken_ms(st["value"], ln, words_by_seg.get(si, [])) if lines else None
-            desired = (spoken_ms - 300) if spoken_ms is not None else ln["start"] + 400
+            # Items 1+6: the value must be final at/before the spoken number.
+            # Count-ups start STAT_LEAD_MS early; static values just before.
+            land_abs = spoken_ms if spoken_ms is not None else ln["start"] + 400
+            lead = 700 if st["is_range"] else STAT_LEAD_MS
+            desired = max(cs, land_abs - lead)
             cards.append({"type": "stat", "label": st["label"], "value": st["value"],
                           "subtext": st["subtext"], "companions": st["companions"],
-                          "is_range": st["is_range"], "desired": max(ln["start"], desired), "prio": 1,
-                          "max_shift": 16000, "max_early": 800,
+                          "is_range": st["is_range"], "static": st["is_range"], "land_abs": land_abs,
+                          "desired": desired, "prio": 1,
+                          "max_shift": 16000, "max_early": STAT_MAX_EARLY_MS,
                           "speakerColor": _dominant_color(lines, ln["idx"], ln["idx"], color_a, color_b)})
-        for ov in seg.get("overlays") or []:
+        # Item 2: 2x2 quadrant -- full matrix where the axes are explained.
+        if quad and quad["intro"][0] == si and lines:
+            il = max(0, min(len(lines) - 1, quad["intro"][1]))
+            cards.append({**quadrant_card(quad), "desired": lines[il]["start"], "prio": 2, "max_shift": 30000,
+                          "max_early": 6000, "speakerColor": _dominant_color(lines, il, il, color_a, color_b)})
+        for oi, ov in enumerate(seg.get("overlays") or []):
             if not isinstance(ov, dict) or ov.get("type") not in ("bullets", "chart"):
                 continue
             if not lines:
+                continue
+            if quad and (si, oi) in quad.get("consumed", set()):
+                continue
+            # Item 2: a strategy's position card -> quadrant with its cell lit;
+            # a card naming >= 3 strategies -> full quadrant with those details.
+            if quad and ((si, oi) in quad["positions"] or (si, oi) in quad["presence"]):
+                i0 = max(0, min(len(lines) - 1, _ov_line_idx(ov, "show_at_line", lines, 0)))
+                color = _dominant_color(lines, i0, i0 + 2, color_a, color_b)
+                if (si, oi) in quad["positions"]:
+                    cell, _li = quad["positions"][(si, oi)]
+                    qc = quadrant_card(quad, title=quad["cells"][cell]["label"], highlight=cell)
+                else:
+                    qc = quadrant_card(quad, title=str(ov.get("title") or ""), details=quad["presence"][(si, oi)])
+                cards.append({**qc, "desired": lines[i0]["start"], "prio": 2, "speakerColor": color})
                 continue
             i0 = max(0, min(len(lines) - 1, _ov_line_idx(ov, "show_at_line", lines, 0)))
             i1 = max(i0, min(len(lines) - 1, _ov_line_idx(ov, "hide_at_line", lines, i0 + 2)))
@@ -631,6 +980,11 @@ def plan_episode(
             else:
                 cards.append({"type": "bullets", "title": title, "items": items, "desired": desired,
                               "prio": 3, "speakerColor": color})
+        if quad and (si, None) in quad["positions"] and lines and not any(k[0] == si and k[1] is not None for k in quad["positions"]):
+            cell, li = quad["positions"][(si, None)]
+            cards.append({**quadrant_card(quad, title=quad["cells"][cell]["label"], highlight=cell),
+                          "desired": lines[li]["start"], "prio": 2,
+                          "speakerColor": _dominant_color(lines, li, li, color_a, color_b)})
         for v in seg.get("visuals") or []:
             if not isinstance(v, dict):
                 continue
@@ -655,6 +1009,14 @@ def plan_episode(
             if not slot:
                 report["dropped"].append({"segment": si + 1, "type": card["type"], "title": card.get("title") or card.get("value")})
                 continue
+            if card["type"] == "stat":
+                # Item 5: guarantee the readable hold after landing (e.g. when the
+                # segment end pulled the hero earlier) by extending into free time.
+                probe = {"show_ms": slot[0], "hide_ms": slot[1], "land_ms": card.get("land_abs", slot[0])}
+                short = STAT_MIN_HOLD_MS - stat_hold_ms(probe)
+                if short > 0:
+                    nxt = min([b0 for b0, _b1 in busy if b0 >= slot[1]] + [ce - 400]) - CARD_PAD_MS
+                    slot = (slot[0], max(slot[1], min(slot[1] + short, nxt)))
             busy.append(slot)
             placed.append({**card, "start": slot[0], "end": slot[1]})
 
@@ -664,6 +1026,7 @@ def plan_episode(
         gap_total = sum(b - a for a, b in gaps) or 1
         frac = _clamp(TARGET_BROLL_FRAC * (ce - cs) / gap_total, 0.35, 0.78)
         broll_windows: list[tuple[int, int]] = []
+        prev_case: str | None = None
         k = 0
         for g0, g1 in gaps:
             t = g0
@@ -686,7 +1049,23 @@ def plan_episode(
             if not wtext.strip():
                 wtext = seg_text
             ctx = f"{seg_title}. {seg_text}"
-            queries: list[str] = []
+            # Item 4: a named company / case in (or just before) this window
+            # drives the query (Zillow -> homes, Pfizer/BioNTech -> vaccine lab).
+            case_name, named = bq.named_case_queries(wtext)
+            if not named:
+                # Case named just before the cut: carry it over once, never for
+                # a run of windows (avoids a wall of the same domain shot).
+                near = " ".join(str(w.get("word") or "") for w in seg_words if b0 - 15000 <= int(w.get("start_ms", 0)) < b0 - 1500)
+                case_name, named = bq.named_case_queries("", near)
+                if case_name and case_name == prev_case:
+                    case_name, named = None, []
+            prev_case = case_name
+            if case_name and named:
+                n_used = case_uses.get(case_name, 0)
+                case_uses[case_name] = n_used + 1
+                r = n_used % len(named)
+                named = named[r:] + named[:r]   # vary the shot across repeats
+            queries: list[str] = list(named)
             gem: list[str] = []
             if gemini_query is not None:
                 try:
@@ -697,13 +1076,13 @@ def plan_episode(
                 for q in gem:
                     q2 = bq.clean_query(q)
                     ok, why = bq.validate_query(q2)
-                    if ok and not (bq.is_llm_context(wtext) and re.search(r"robot|android|machine arm", q2)):
+                    if ok and q2 not in queries and not (bq.is_llm_context(wtext) and re.search(r"robot|android|machine arm", q2)):
                         queries.append(q2)
             local = bq.local_query_candidates(wtext, ctx, salt=salt, recent=recent_queries[-4:])
             salt += 1
             queries += [q for q in local if q not in queries]
             photo = picker.pick(queries, context_text=f"{wtext} {ctx}", role="broll") if picker else None
-            entry = {"start": b0, "end": b1, "queries": queries[:4], "gemini": gem[:3],
+            entry = {"start": b0, "end": b1, "queries": queries[:4], "gemini": gem[:3], "named_case": case_name,
                      "photo_url": (photo or {}).get("url") or "", "photo_id": (photo or {}).get("id"),
                      "query": (photo or {}).get("query") or (queries[0] if queries else ""),
                      "excerpt": _truncate(wtext, 140)}
@@ -723,6 +1102,9 @@ def plan_episode(
             b1 = int(cs + (b + 1) * span) if b < n_bd - 1 else ce
             btext = " ".join(ln["text"] for ln in lines if ln["end"] > b0 and ln["start"] < b1) or seg_text
             qs = bq.local_query_candidates(btext, f"{seg_title}. {seg_text}", salt=si * 7 + b + 3, limit=6)
+            bd_case, bd_named = bq.named_case_queries(btext, "")
+            if bd_named:
+                qs = [q for q in bd_named if q not in qs][:2] + qs
             photo = picker.pick(qs, context_text=f"{btext} {seg_text}", role="backdrop") if picker else None
             if photo:
                 backdrops.append({"start": b0, "end": b1, "photo_url": photo["url"], "query": photo["query"], "photo_id": photo["id"]})
@@ -731,9 +1113,18 @@ def plan_episode(
         # --- rebase to card-relative ms ---
         beats = []
         for p in sorted(placed, key=lambda c: c["start"]):
-            b = {k2: v2 for k2, v2 in p.items() if k2 not in ("start", "end", "desired", "prio", "dur", "max_shift", "max_early")}
+            b = {k2: v2 for k2, v2 in p.items() if k2 not in ("start", "end", "desired", "prio", "dur", "max_shift", "max_early", "land_abs")}
             b["show_ms"] = int(p["start"] - cs)
             b["hide_ms"] = int(p["end"] - cs)
+            if b["type"] == "stat":
+                # Card-relative ms of the spoken number: StatHero finishes any
+                # count-up by then (snaps if the card started too late).
+                b["land_ms"] = int(p.get("land_abs", p["start"]) - cs)
+                b["count_up"] = (not b.get("static")) and (b["land_ms"] - b["show_ms"]) >= 570
+                report.setdefault("stat_holds", []).append({
+                    "segment": si + 1, "value": b.get("value"), "static": bool(b.get("static")),
+                    "count_up": b["count_up"], "lead_ms": b["land_ms"] - b["show_ms"],
+                    "hold_after_land_ms": stat_hold_ms(b)})
             beats.append(b)
         bds = [{"start_ms": int(b["start"] - cs), "end_ms": int(b["end"] - cs), "photo_url": b["photo_url"],
                 "query": b["query"], "photo_id": b["photo_id"]} for b in backdrops]
@@ -772,8 +1163,12 @@ def plan_episode(
         "unique_photos": len(picker.used) if picker else 0,
         "pexels_api_calls": picker.api_calls if picker else 0,
         "rejected_photos": (picker.rejects[:40] if picker else []),
+        "quadrants": sum(1 for s in per_segment for b in s["beats"] if b.get("kind") == "quadrant"),
+        "named_case_broll": sum(1 for b in report["broll"] if b.get("named_case")),
+        "stat_min_hold_ms": min([h["hold_after_land_ms"] for h in report.get("stat_holds", [])] or [0]),
     }
     return {"segments": per_segment, "report": report}
 
 
-__all__ = ["plan_episode", "collect_stats", "pick_chapters", "bullets_to_diagram", "stat_signature"]
+__all__ = ["plan_episode", "collect_stats", "pick_chapters", "bullets_to_diagram", "stat_signature",
+           "stat_is_static", "enrich_stat_value", "detect_quadrant", "normalize_quadrant", "stat_hold_ms"]

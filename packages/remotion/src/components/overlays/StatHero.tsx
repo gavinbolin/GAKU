@@ -1,6 +1,6 @@
 import React from "react";
 import { interpolate } from "remotion";
-import { countUpAt, isSimpleSingleNumber } from "./StatOverlay";
+import { countUpAt, isSimpleSingleNumber, isStaticStat, LEADING_QUALIFIER_RE } from "./StatOverlay";
 
 /**
  * StatHero -- one dedicated, full-stage hit per key stat (2026-09-25 items 1+7).
@@ -12,6 +12,13 @@ import { countUpAt, isSimpleSingleNumber } from "./StatOverlay";
  *     values with proper formatting (grouping + decimals preserved).
  *     Never digit-roll, never show a wrong intermediate string.
  * Companions (e.g. "180 countries", "130 languages") follow the same rules.
+ *
+ * 2026-09-28 (items 1 + 6):
+ *   - `landMs` = ms (relative to this hero's start) when the hosts SAY the
+ *     number. Any count-up finishes by then; if there isn't room (< 450 ms)
+ *     the value simply snaps in. The viewer never sees 82% while hearing 90%.
+ *   - Limits / approximations ("Up to 6.9%", "Over $4 billion", "~40%") are
+ *     static: the qualifier renders as a kicker, the number never rolls.
  */
 
 export interface StatCompanion {
@@ -27,6 +34,10 @@ export interface StatHeroProps {
   localMs: number;
   durationMs: number;
   speakerColor: string;
+  /** ms after the hero appears when the number is spoken (alignment word time). */
+  landMs?: number;
+  /** Planner verdict; false forces a static snap. */
+  countUp?: boolean;
 }
 
 const TEXT = "#f5f0e8";
@@ -45,9 +56,19 @@ export const splitStatValue = (raw: string): { core: string; rest: string } => {
 
 const RANGE_ANY_RE = /\d\s*(?:[-–—]|to)\s*\d/i;
 
-const display = (core: string, localMs: number, delayMs = 0, countable = true): string => {
-  if (!countable || !isSimpleSingleNumber(core)) return core; // ranges & text: static, full string
-  const t = (localMs - delayMs) / COUNT_MS;
+const MIN_COUNT_MS = 450;
+const LAND_MARGIN_MS = 120;
+
+/** Count window that ends at/before the spoken number; 0 => static snap. */
+export const countWindowMs = (landMs?: number, countUp?: boolean): number => {
+  if (countUp === false) return 0;
+  const w = landMs === undefined ? COUNT_MS : Math.min(COUNT_MS, landMs - LAND_MARGIN_MS);
+  return w >= MIN_COUNT_MS ? w : 0;
+};
+
+const display = (core: string, localMs: number, delayMs = 0, countable = true, windowMs = COUNT_MS): string => {
+  if (!countable || windowMs <= 0 || !isSimpleSingleNumber(core)) return core; // static, full string
+  const t = (localMs - delayMs) / windowMs;
   return countUpAt(core, t);
 };
 
@@ -59,10 +80,16 @@ export const StatHero: React.FC<StatHeroProps> = ({
   localMs,
   durationMs,
   speakerColor,
+  landMs,
+  countUp,
 }) => {
-  const { core, rest } = splitStatValue(value);
-  // Any range or extra digits anywhere in the value => whole value static.
-  const countable = !RANGE_ANY_RE.test(value) && !/\d/.test(rest);
+  const qm = LEADING_QUALIFIER_RE.exec(value || "");
+  const qualifier = qm ? qm[1] : "";
+  const body = qm ? (value || "").slice(qm[0].length) : value;
+  const { core, rest } = splitStatValue(body);
+  // Any range / limit / approximation / extra digits => whole value static.
+  const countable = !isStaticStat(value) && !RANGE_ANY_RE.test(value) && !/\d/.test(rest);
+  const windowMs = countWindowMs(landMs, countUp);
   const inT = interpolate(localMs, [0, 450], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
@@ -110,6 +137,20 @@ export const StatHero: React.FC<StatHeroProps> = ({
         </div>
       ) : null}
       <div style={{ display: "flex", alignItems: "baseline", gap: 26, justifyContent: "center" }}>
+        {qualifier ? (
+          <div
+            style={{
+              fontSize: 64,
+              fontWeight: 800,
+              color: TEXT,
+              textTransform: "uppercase",
+              letterSpacing: 2,
+              textShadow: "0 4px 18px rgba(0,0,0,0.7)",
+            }}
+          >
+            {qualifier}
+          </div>
+        ) : null}
         <div
           style={{
             fontSize: coreSize,
@@ -121,7 +162,7 @@ export const StatHero: React.FC<StatHeroProps> = ({
             fontVariantNumeric: "tabular-nums",
           }}
         >
-          {display(core, localMs, 0, countable)}
+          {display(core, localMs, 0, countable, windowMs)}
         </div>
         {rest ? (
           <div style={{ fontSize: 64, fontWeight: 800, color: TEXT, textShadow: "0 4px 18px rgba(0,0,0,0.7)" }}>
@@ -143,7 +184,7 @@ export const StatHero: React.FC<StatHeroProps> = ({
                   fontVariantNumeric: "tabular-nums",
                 }}
               >
-                {display(c.value, localMs, 500 + i * 250, !RANGE_ANY_RE.test(c.value))}
+                {display(c.value, localMs, 500 + i * 250, !RANGE_ANY_RE.test(c.value) && !isStaticStat(c.value))}
               </div>
               <div
                 style={{

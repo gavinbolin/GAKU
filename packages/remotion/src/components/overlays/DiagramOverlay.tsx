@@ -13,6 +13,8 @@ import { interpolate } from "remotion";
  *   timeline    dated milestones on an axis
  *   definition  key term card
  *   quote       pull quote
+ *   quadrant    2x2 strategy matrix: two labeled axes, four labeled cells,
+ *               optional highlighted cell (2026-09-28 item 2)
  */
 
 export interface DiagramNode {
@@ -25,8 +27,32 @@ export interface DiagramColumn {
   points: string[];
 }
 
+export interface QuadrantAxis {
+  label: string;
+  low?: string;
+  high?: string;
+}
+
+export interface QuadrantCell {
+  label: string;
+  detail?: string;
+  /** 0 = low / left, 1 = high / right */
+  x: number;
+  /** 0 = low / bottom, 1 = high / top */
+  y: number;
+}
+
+export interface QuadrantData {
+  x_axis: QuadrantAxis;
+  y_axis: QuadrantAxis;
+  cells: QuadrantCell[];
+  /** index into cells to spotlight (others dim); null/undefined = all equal */
+  highlight?: number | null;
+}
+
 export interface DiagramOverlayProps {
   kind: string;
+  quadrant?: QuadrantData;
   title?: string;
   nodes?: DiagramNode[];
   center?: string;
@@ -357,6 +383,113 @@ const Timeline: React.FC<DiagramOverlayProps> = ({ nodes = [], localMs, duration
   );
 };
 
+
+const Quadrant: React.FC<DiagramOverlayProps> = ({ quadrant, localMs, durationMs, speakerColor }) => {
+  if (!quadrant || !quadrant.cells || quadrant.cells.length !== 4) return null;
+  const { x_axis, y_axis, cells } = quadrant;
+  const hl = quadrant.highlight ?? null;
+  // Compact enough that the whole matrix (incl. the bottom row + x-axis labels)
+  // clears a 4-line karaoke caption block (stage ~ y 90..600 in 1080p).
+  const CELL_W = 540;
+  const CELL_H = 136;
+  const GAP = 12;
+  const GRID_W = CELL_W * 2 + GAP;
+  const GRID_H = CELL_H * 2 + GAP;
+  const TITLE_COL = 58; // rotated y-axis title (may wrap to 2 lines)
+  const TICK_COL = 30; // rotated High / Low ticks at row centres
+  const ARROW_X = TITLE_COL + TICK_COL + 8;
+  const GRID_X = ARROW_X + 20;
+  const BELOW = 78; // x arrow + ticks + x title
+  const axesIn = interpolate(localMs, [100, 700], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // Full matrix: cells pop in one by one. Highlight: all in fast, then spotlight.
+  const cellIn = (i: number) =>
+    hl === null
+      ? reveal(localMs, i, 4, durationMs)
+      : interpolate(localMs, [200, 600], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const spot = hl === null ? 0 : interpolate(localMs, [700, 1200], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const tick: React.CSSProperties = {
+    fontSize: 17, fontWeight: 800, letterSpacing: 3, textTransform: "uppercase", color: MUTED, whiteSpace: "nowrap",
+  };
+  const axisTitle: React.CSSProperties = {
+    fontSize: 22, fontWeight: 900, color: TEXT, letterSpacing: 2, textTransform: "uppercase", lineHeight: 1.1,
+    textAlign: "center",
+  };
+  const rowCentre = (y: number) => (y ? CELL_H / 2 : CELL_H + GAP + CELL_H / 2);
+  const colCentre = (x: number) => GRID_X + (x ? CELL_W + GAP + CELL_W / 2 : CELL_W / 2);
+  return (
+    <div style={{ position: "relative", width: GRID_X + GRID_W + 24, height: GRID_H + BELOW, margin: "0 auto" }}>
+      {/* y axis title (rotated, centred on the grid) */}
+      <div style={{ position: "absolute", left: TITLE_COL / 2 - GRID_H / 2, top: GRID_H / 2 - TITLE_COL / 2,
+        width: GRID_H, height: TITLE_COL, transform: "rotate(-90deg)", display: "flex", alignItems: "center",
+        justifyContent: "center", opacity: axesIn }}>
+        <span style={axisTitle}>{y_axis.label}</span>
+      </div>
+      {/* y ticks at row centres */}
+      {[1, 0].map((y) => (
+        <div key={`yt${y}`} style={{ position: "absolute", left: TITLE_COL + TICK_COL / 2 - 60, top: rowCentre(y) - 12,
+          width: 120, height: 24, transform: "rotate(-90deg)", display: "flex", justifyContent: "center",
+          alignItems: "center", opacity: axesIn }}>
+          <span style={tick}>{y ? y_axis.high || "High" : y_axis.low || "Low"}</span>
+        </div>
+      ))}
+      {/* y arrow */}
+      <div style={{ position: "absolute", left: ARROW_X, top: GRID_H * (1 - axesIn), width: 5, height: GRID_H * axesIn,
+        background: speakerColor, borderRadius: 3, boxShadow: `0 0 14px ${speakerColor}` }} />
+      <div style={{ position: "absolute", left: ARROW_X - 8, top: -14, width: 0, height: 0, opacity: axesIn,
+        borderLeft: "10px solid transparent", borderRight: "10px solid transparent", borderBottom: `16px solid ${speakerColor}` }} />
+      {/* x arrow */}
+      <div style={{ position: "absolute", left: ARROW_X, top: GRID_H + 10, height: 5, width: (GRID_X - ARROW_X + GRID_W) * axesIn,
+        background: speakerColor, borderRadius: 3, boxShadow: `0 0 14px ${speakerColor}` }} />
+      <div style={{ position: "absolute", left: GRID_X + GRID_W - 2, top: GRID_H + 2, width: 0, height: 0, opacity: axesIn,
+        borderTop: "10px solid transparent", borderBottom: "10px solid transparent", borderLeft: `16px solid ${speakerColor}` }} />
+      {/* x ticks at column centres + x title */}
+      {[0, 1].map((x) => (
+        <div key={`xt${x}`} style={{ position: "absolute", left: colCentre(x) - 150, top: GRID_H + 20, width: 300,
+          textAlign: "center", opacity: axesIn }}>
+          <span style={tick}>{x ? x_axis.high || "High" : x_axis.low || "Low"}</span>
+        </div>
+      ))}
+      <div style={{ position: "absolute", left: GRID_X, top: GRID_H + 44, width: GRID_W, opacity: axesIn, ...axisTitle }}>
+        {x_axis.label} →
+      </div>
+      {/* cells */}
+      {cells.map((c, i) => {
+        const r = cellIn(i);
+        const isHl = hl === i;
+        const dim = hl === null ? 1 : isHl ? 1 : 1 - 0.55 * spot;
+        return (
+          <div
+            key={i}
+            style={{
+              position: "absolute",
+              left: GRID_X + (c.x ? CELL_W + GAP : 0),
+              top: c.y ? 0 : CELL_H + GAP,
+              width: CELL_W,
+              height: CELL_H,
+              boxSizing: "border-box",
+              padding: "14px 26px",
+              borderRadius: 18,
+              background: isHl ? `linear-gradient(160deg, ${speakerColor}55 0%, rgba(14,14,34,0.94) 75%)` : PANEL,
+              border: `${isHl ? 4 : 2}px solid ${isHl ? speakerColor : speakerColor + "77"}`,
+              boxShadow: isHl ? `0 0 ${22 + 24 * spot}px ${speakerColor}aa, 0 16px 36px rgba(0,0,0,0.5)` : "0 12px 30px rgba(0,0,0,0.45)",
+              opacity: r * dim,
+              transform: `scale(${(0.9 + 0.1 * r) * (isHl ? 1 + 0.03 * spot : 1)})`,
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              gap: 6,
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 34, fontWeight: 900, lineHeight: 1.1, color: TEXT }}>{c.label}</div>
+            {c.detail ? <div style={{ fontSize: 22, color: MUTED, lineHeight: 1.25 }}>{c.detail}</div> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const TextCard: React.FC<DiagramOverlayProps & { quote?: boolean }> = ({ nodes = [], title, localMs, speakerColor, quote }) => {
   const r = interpolate(localMs, [0, 500], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const nd = nodes[0] || { label: "", detail: "" };
@@ -414,6 +547,9 @@ export const DiagramOverlay: React.FC<DiagramOverlayProps> = (props) => {
     case "quote":
       body = <TextCard {...props} quote />;
       break;
+    case "quadrant":
+      body = <Quadrant {...props} />;
+      break;
     default:
       body = <Pillars {...props} />;
   }
@@ -424,7 +560,10 @@ export const DiagramOverlay: React.FC<DiagramOverlayProps> = (props) => {
         inset: 0,
         display: "flex",
         flexDirection: "column",
-        justifyContent: "center",
+        // quadrant sits high so its bottom row clears multi-line captions
+        justifyContent: kind === "quadrant" ? "flex-start" : "center",
+        paddingTop: kind === "quadrant" ? 14 : 0,
+        boxSizing: "border-box",
         alignItems: "center",
         fontFamily: FONT,
         color: TEXT,

@@ -394,6 +394,24 @@ def main() -> int:
 
             _strip_episode_markdown(episode, "script")
 
+            # 2026-09-28 (item 3): don't retell the cold-open hook in the next
+            # segment. Detect heavy overlap; rewrite only those lines (Gemini,
+            # model fallback). Never fatal; report saved next to episode.json.
+            try:
+                from script_dedupe import dedupe_hook_retell
+                episode, dd_report = dedupe_hook_retell(episode, research_notes)
+                (out_dir / "script_dedupe_report.json").write_text(
+                    json.dumps(dd_report, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                if dd_report.get("heavy"):
+                    print(
+                        f"[podcast] hook-retell dedupe: action={dd_report.get('action')} "
+                        f"rewritten={dd_report.get('rewritten')} in {dd_report.get('next_segment')}",
+                        file=sys.stderr,
+                    )
+            except Exception as exc:
+                print(f"[podcast] warning: hook-retell dedupe failed: {exc!r}", file=sys.stderr)
+
             # Always save the Gemini-generated episode script into the run folder
             # so the run is fully reproducible from disk. --episode-out, if set,
             # additionally writes to a user-specified path.
@@ -450,9 +468,10 @@ def main() -> int:
         # Fact-check against primary source when available (HBR / framework listens).
 
         # Same class as Enterprise factcheck_report.json — durable for Most AI etc.
+        factcheck_warning = None
         if not getattr(args, "skip_factcheck", False):
             try:
-                from factcheck_episode import fact_check_episode, find_source_text
+                from factcheck_episode import fact_check_episode, find_source_text, factcheck_status_line
                 source_text = find_source_text(out_dir, getattr(args, "source", None))
                 if source_text:
                     print("[podcast] fact-checking episode against primary source…", file=sys.stderr)
@@ -466,6 +485,10 @@ def main() -> int:
                         f"(wrote factcheck_report.json)",
                         file=sys.stderr,
                     )
+                    # 2026-09-28: 0 checked claims is a warning, not a pass.
+                    print(f"[podcast] factcheck {factcheck_status_line(fc_report)}", file=sys.stderr)
+                    if summary.get("status") == "warning_unchecked":
+                        factcheck_warning = factcheck_status_line(fc_report)
                 else:
                     print(
                         "[podcast] no primary source file for fact-check "
@@ -617,6 +640,8 @@ def main() -> int:
         if drive_src is not None:
             _copy_to_drive(drive_src, out_dir.name)
 
+        if factcheck_warning:
+            print(f"\n[podcast] {factcheck_warning}", file=sys.stderr)
         if final_video_path:
             print(f"\n[podcast] DONE: video={final_video_path}  audio={final_audio_path}")
         else:

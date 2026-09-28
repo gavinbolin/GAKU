@@ -415,7 +415,33 @@ function outlinePrompt(): string {
     "- Ban filler words (Wow, Exactly, Precisely, That is a great..., delve, its important to note) in any sample copy.",
     "- Soft-cap each spoken line to ~12-14s (~30-36 words); split longer explanations.",
     "- Segment titles are plain - never append (part N) or (part N/M).",
+    // 2026-09-28 item 3 (additive): the cold-open story is told ONCE.
+    "- The `hook` tells the cold-open story/case in full. The first `beat` after it must NOT",
+    "  retell that story: its intent should reference the hook in at most one short line",
+    "  (e.g. 'that GM-vs-Apple contrast') and move straight to NEW material.",
+    "- If the source is a framework article (two axes -> four strategies/types), plan one beat",
+    "  that introduces the 2x2 framework and one beat per quadrant; the recap is titled",
+    "  'Key Takeaways'.",
   ].join("\n");
+}
+
+/** 2026-09-28 item 3: hook text handed to later segments so they don't retell it. */
+function alreadyToldBlock(hookSummary: string | undefined): string {
+  if (!hookSummary) return "";
+  return [
+    "",
+    "ALREADY_TOLD_IN_HOOK (do NOT retell; reference it in at most ONE short line, then move on):",
+    hookSummary,
+  ].join("\n");
+}
+
+function hookSummaryFromLines(lines: Array<Record<string, unknown>> | undefined): string {
+  if (!lines || lines.length === 0) return "";
+  const text = lines
+    .map((l) => String((l as { text?: unknown }).text ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+  return text.length > 1800 ? text.slice(0, 1800) + "…" : text;
 }
 
 function segmentPrompt(hostA: { name: string; voice_id: string }, hostB: { name: string; voice_id: string }): string {
@@ -445,7 +471,9 @@ function segmentPrompt(hostA: { name: string; voice_id: string }, hostB: { name:
     '  "overlays": [',
     '    { "type": "bullets", "title": "Key Points", "items": ["...", "..."], "show_at_line": 2, "hide_at_line": 6 },',
     '    { "type": "stat", "label": "Market Size", "value": "$4.8T", "subtext": "...", "show_at_line": 3, "hide_at_line": 5 },',
-    '    { "type": "chart", "chart_type": "growth", "title": "...", "data_points": [{"label":"2020","value":64}], "show_at_line": 4, "hide_at_line": 8 }',
+    '    { "type": "chart", "chart_type": "growth", "title": "...", "data_points": [{"label":"2020","value":64}], "show_at_line": 4, "hide_at_line": 8 },',
+    '    { "type": "quadrant", "title": "...", "x_axis": {"label":"...","low":"Low","high":"High"}, "y_axis": {"label":"...","low":"Low","high":"High"},',
+    '      "cells": [{"label":"...","x":"low","y":"low"},{"label":"...","x":"high","y":"low"},{"label":"...","x":"low","y":"high"},{"label":"...","x":"high","y":"high"}], "show_at_line": 2, "hide_at_line": 8 }',
     "  ]",
     "}",
     "",
@@ -469,6 +497,14 @@ function segmentPrompt(hostA: { name: string; voice_id: string }, hostB: { name:
     "    bullets:  { type, title, items[2-6], show_at_line, hide_at_line }",
     "    stat:     { type, label, value (string), subtext?, show_at_line, hide_at_line }",
     "    chart:    { type, chart_type:\"growth\", title, data_points[3-8] of {label,value(number)}, show_at_line, hide_at_line }",
+    "    quadrant: { type, title, x_axis{label,low,high}, y_axis{label,low,high}, cells[4] of {label, detail?, x:\"low\"|\"high\", y:\"low\"|\"high\"}, highlight?, show_at_line, hide_at_line }",
+    "  Use `quadrant` ONLY when the RESEARCH_NOTES define two axes that produce four named",
+    "  strategies/types (a 2x2 framework). Axis and cell labels must come from the source -",
+    "  never invent a matrix. Use it in the segment that introduces the framework; segments",
+    "  about one quadrant may repeat it with `highlight` = that cell's label. Keep bullets elsewhere.",
+    "- If SEGMENT_KIND is `recap`, include a bullets overlay titled \"Key Takeaways\" (3-5 items).",
+    "- If ALREADY_TOLD_IN_HOOK is present, do not retell that story or repeat its numbers;",
+    "  one short callback line at most (\"like that GM example\"), then new material.",
     "  show_at_line / hide_at_line are 1-based line indices within this segment;",
     "  hide_at_line must exceed show_at_line. Overlays are visual aids that appear",
     "  ON TOP of the SegmentCard while the topic is actively being discussed.",
@@ -524,7 +560,8 @@ function buildSegmentUserMessage(
   audience: string,
   focus: string,
   research: string,
-  seg: OutlineSegment
+  seg: OutlineSegment,
+  hookSummary?: string
 ): string {
   return [
     `TOPIC: ${topic}`,
@@ -541,6 +578,7 @@ function buildSegmentUserMessage(
     "",
     "RESEARCH_NOTES:",
     research,
+    alreadyToldBlock(seg.kind === "hook" ? undefined : hookSummary),
   ].join("\n");
 }
 
@@ -619,6 +657,7 @@ async function generateChunked(
     });
 
   const filledSegments: Array<Record<string, unknown>> = [];
+  let hookSummary = "";
   let allRaw = `OUTLINE:\n${outlineResult.raw}\n`;
 
   for (let i = 0; i < segments.length; i++) {
@@ -631,7 +670,8 @@ async function generateChunked(
       audience,
       focus,
       args.research_notes,
-      seg
+      seg,
+      hookSummary
     );
     const body = await generateSegment(buildSegmentModel, userMessage, seg.segment_id);
     if (!body) {
@@ -640,6 +680,9 @@ async function generateChunked(
         raw: allRaw,
         warning: `Segment ${seg.segment_id} failed after ${MAX_ATTEMPTS} attempts.`,
       };
+    }
+    if (seg.kind === "hook" || (i === 0 && !hookSummary)) {
+      hookSummary = hookSummaryFromLines(body.lines);
     }
     allRaw += `\nSEGMENT ${seg.segment_id}:\n${JSON.stringify(body).slice(0, 500)}…\n`;
 

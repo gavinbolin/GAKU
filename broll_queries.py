@@ -211,6 +211,80 @@ EPISODE_FALLBACKS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Named companies / cases -> domain B-roll (2026-09-28 item 4)
+# ---------------------------------------------------------------------------
+# When a beat names a concrete company or case, the B-roll should show that
+# company's DOMAIN (Zillow -> homes, Pfizer/BioNTech -> vaccine lab), not a
+# generic industry clip matched on a side word ("inventory" -> forklift).
+# Patterns are case-sensitive for short tickers (GE, GM, P&G) and
+# case-insensitive (?i:...) otherwise. Queries still pass validate_query and
+# the robot / word-art photo filters.
+
+NAMED_CASES: list[tuple[str, re.Pattern[str], list[str]]] = [
+    ("zillow", re.compile(r"(?i:\bzillow\b|zestimate|\bredfin\b|\bopendoor\b|home[- ]?flipping|house[- ]?flipping|ibuy\w*)"),
+     ["suburban houses street", "real estate agent showing house", "family touring new house", "home for sale front yard"]),
+    ("pfizer_biontech", re.compile(r"(?i:\bpfizer\b|\bbiontech\b|\bmoderna\b|\bmrna\b|covid[- ]19 vaccine|\bvaccines?\b)"),
+     ["vaccine vials laboratory", "scientist pipette laboratory", "vaccine research lab", "lab technician test tubes"]),
+    ("pharma_rd", re.compile(r"(?i:\bnovartis\b|\bastrazeneca\b|\broche\b|\bmerck\b|\bsanofi\b|\bgsk\b|drug discovery)"),
+     ["pharmaceutical research laboratory", "scientist microscope lab", "chemist lab glassware"]),
+    ("autonomous_driving", re.compile(r"(?i:\bmobileye\b|\bwaymo\b|\btesla\b|autonomous (?:driving|vehicles?|cars?)|self[- ]driving|\bbmw\b)"),
+     ["self driving car street", "car dashboard driver assistance", "electric car highway"]),
+    ("semiconductors", re.compile(r"(?i:\bintel\b|\bnvidia\b|\btsmc\b|\bsemiconductors?\b|chip fabrication|microchips?)"),
+     ["semiconductor wafer cleanroom", "microchip circuit board closeup", "chip factory cleanroom worker"]),
+    ("samsung", re.compile(r"(?i:\bsamsung\b|galaxy phones?)"),
+     ["smartphone camera closeup", "electronics store smartphones"]),
+    ("apple", re.compile(r"(?i:\biphones?\b|face id|metalens\w*)|\bApple\b"),
+     ["iphone camera closeup", "smartphone face unlock", "person holding iphone"]),
+    ("automaker", re.compile(r"\bGM\b|(?i:general motors|\bford\b|\btoyota\b|seat bracket|stamped steel)"),
+     ["car factory assembly line", "automotive plant workers", "car parts manufacturing"]),
+    ("ecommerce_logistics", re.compile(r"(?i:\bjd\.?com\b|\balibaba\b|\bamazon\b|delivery routing|delivery network)"),
+     ["parcel sorting warehouse", "delivery van packages", "courier delivering package"]),
+    ("hurricane", re.compile(r"(?i:\bhurricanes?\b|emergency supplies|tropical storm)"),
+     ["hurricane storm clouds coast", "emergency supplies water bottles"]),
+    ("big_box_retail", re.compile(r"(?i:\bwalmart\b|\bcostco\b|\btarget stores?\b|\bkroger\b)"),
+     ["supermarket aisle shoppers", "grocery store shelves stocked", "retail checkout cashier"]),
+    ("ge_industrial", re.compile(r"\bGE\b|(?i:\bpredix\b|general electric|\bturbines?\b|locomotives?)"),
+     ["wind turbines field", "jet engine maintenance hangar", "freight locomotive railway"]),
+    ("medical_imaging", re.compile(r"(?i:healthineers|medical imaging|\bmri\b|radiolog\w+|ct scans?)"),
+     ["mri scanner hospital", "radiologist reviewing scans"]),
+    ("bloomberg_finance", re.compile(r"(?i:\bbloomberg\w*|trading desks?|wall street)"),
+     ["stock market trading screens", "financial trader monitors"]),
+    ("microsoft_dev", re.compile(r"(?i:\bmicrosoft\b|\bgithub\b|\bcopilot\b|\bazure\b)"),
+     ["software developer coding laptop", "programmer dual monitors code"]),
+    ("nhs_health_data", re.compile(r"(?i:\bdeepmind\b|\bnhs\b|patient data|patient records)"),
+     ["hospital patient records", "doctor reviewing patient chart"]),
+    ("oncology", re.compile(r"(?i:md anderson|\boncolog\w+|\bcancer\b|ibm watson)"),
+     ["cancer hospital oncology", "oncologist patient consultation"]),
+    ("colgate", re.compile(r"(?i:colgate|palmolive|toothpaste)"),
+     ["toothpaste tubes production", "personal care products shelf"]),
+    ("pg_consumer", re.compile(r"\bP&G\b|(?i:procter\s*(?:&|and)\s*gamble)"),
+     ["household products store shelf", "consumer goods factory line"]),
+    ("coffee_chain", re.compile(r"(?i:\bstarbucks\b)"), ["coffee shop barista", "barista pouring latte"]),
+    ("streaming", re.compile(r"(?i:\bnetflix\b|\bspotify\b)"), ["streaming movie living room", "person watching tv couch"]),
+    ("rideshare", re.compile(r"(?i:\buber\b|\blyft\b|ride[- ]?hailing)"), ["ride share car passenger", "driver phone navigation car"]),
+]
+
+
+def named_case_queries(window_text: str, near_text: str = "") -> tuple[str | None, list[str]]:
+    """(case_name, domain queries) for the company / case named in the window
+    (else just before it); (None, []) when nothing concrete is named."""
+    for text in (window_text or "", near_text or ""):
+        if not text.strip():
+            continue
+        best: tuple[int, int, str, list[str]] | None = None
+        for name, pat, queries in NAMED_CASES:
+            hits = list(pat.finditer(text))
+            if not hits:
+                continue
+            key = (len(hits), -hits[0].start())
+            if best is None or key > best[:2]:
+                best = (key[0], key[1], name, queries)
+        if best:
+            return best[2], [q for q in best[3] if validate_query(q)[0]]
+    return None, []
+
+
 def concept_scores(window_text: str, context_text: str = "") -> list[tuple[str, float, list[str]]]:
     """Score concepts by hits in the window (x3) plus the wider context (x1)."""
     out: list[tuple[str, float, list[str]]] = []
@@ -256,6 +330,14 @@ def is_llm_context(text: str) -> bool:
     return bool(LLM_CONTEXT_RE.search(text or ""))
 
 
+BOARD_WRITING_ALT_RE = re.compile(
+    r"\b(white ?board|chalk ?board|black ?board|flip ?chart)\b.*\b(writ\w*|draw\w*|diagram\w*|sketch\w*|"
+    r"formula\w*|equation\w*|notes?|marker)\b|\b(writ\w*|draw\w*|diagram\w*|sketch\w*)\b.*\b(white ?board|"
+    r"chalk ?board|black ?board|flip ?chart)\b",
+    re.IGNORECASE,
+)
+
+
 def photo_rejected(photo: dict[str, Any], context_text: str = "") -> str | None:
     """Return a reject reason for a Pexels photo, or None when acceptable."""
     alt = str(photo.get("alt") or "")
@@ -265,6 +347,10 @@ def photo_rejected(photo: dict[str, Any], context_text: str = "") -> str | None:
         return "robot imagery"
     if TEXT_ART_ALT_RE.search(alt):
         return "text / word-art"
+    # 2026-09-28: whiteboards covered in someone's writing / diagrams read as
+    # off-topic text on screen (the "manta-ray whiteboard" during a concept beat).
+    if BOARD_WRITING_ALT_RE.search(blob):
+        return "text / board writing"
     return None
 
 
@@ -396,4 +482,6 @@ __all__ = [
     "is_llm_context",
     "PexelsPicker",
     "EPISODE_FALLBACKS",
+    "named_case_queries",
+    "NAMED_CASES",
 ]

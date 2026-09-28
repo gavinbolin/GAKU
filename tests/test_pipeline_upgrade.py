@@ -242,12 +242,172 @@ def test_karaoke_words_have_no_markdown_and_keep_timing():
 def test_stat_value_restores_currency_and_scale():
     import visual_timeline as vt
     e = vt.enrich_stat_value
-    assert e("4", "Despite spending over $4 billion, it failed.") == "$4 billion"
+    # 2026-09-28 item 6: the spoken qualifier is kept (static render, never counts up)
+    assert e("4", "Despite spending over $4 billion, it failed.") == "Over $4 billion"
     assert e("304million", "a staggering $304 million write-down") == "$304 million"
     assert e("90%", "cut deployment time by 90%") == "90%"
+    assert e("90%", "cut deployment time by up to 90%.") == "Up to 90%"
     assert e("12", "12 percent of firms") == "12%"
     assert e("Up to 6.9%", "up to 6.9%") == "Up to 6.9%"
     assert e("4", "about 40 firms and 4 teams") == "4"
+
+
+# ======================================================= 2026-09-28 M7 review
+def test_ranges_and_limits_are_static():  # item 6
+    import visual_timeline as vt
+    for v in ["Up to 6.9%", "up to 90%", "about 40%", "around 3x", "nearly 50%", "over $4 billion",
+              "more than 1,000", "~40%", "5-10%", "25–35%", "10,000+", "5 to 10%"]:
+        assert vt.stat_is_static(v), v
+    for v in ["25%", "42%", "$304 million", "10,000", "6.9%"]:
+        assert not vt.stat_is_static(v), v
+
+
+def test_stat_count_up_lands_before_spoken_and_holds():  # items 1 + 5
+    import visual_queue
+
+    filler = "We keep unpacking how the operating model changes day to day work for teams."
+    spoken = {3: "Their pilot cut deployment time by up to 90% in the first year.",
+              9: "Only 25% of CEOs say they feel fully prepared to deploy it."}
+    lines = [{"line_id": f"s01_l{k+1:02d}", "host_id": "AB"[k % 2], "text": spoken.get(k, filler)} for k in range(16)]
+    ep = {"topic": "t", "hosts": [{"id": "A"}, {"id": "B"}], "segments": [
+        {"segment_id": "s01", "title": "Deployment", "lines": lines, "overlays": [
+            {"type": "stat", "label": "Deployment time", "value": "90%", "show_at_line": 4, "hide_at_line": 5},
+            {"type": "stat", "label": "CEOs prepared", "value": "25%", "show_at_line": 10, "hide_at_line": 11}]}]}
+    clips = {"clips": [{"line_id": ln["line_id"], "duration_ms": 6000} for ln in lines]}
+    orig = bq.PexelsPicker.candidates
+    bq.PexelsPicker.candidates = _fake_candidates
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m = visual_queue.build_visual_manifest(ep, clips, Path(td), pexels_key="offline-test", audio_path=None)
+    finally:
+        bq.PexelsPicker.candidates = orig
+    beats = [b for v in m["visuals"] if v["template"] == "SegmentCard" for b in v["data"].get("beats") or []]
+    stats = {b["value"]: b for b in beats if b["type"] == "stat"}
+    assert "Up to 90%" in stats, list(stats)
+    rng, single = stats["Up to 90%"], stats["25%"]
+    assert rng["count_up"] is False and rng.get("static"), rng
+    for b in (rng, single):
+        assert b["show_ms"] <= b["land_ms"] < b["hide_ms"], b
+        assert b["hide_ms"] - b["land_ms"] >= 4000, b  # item 5: >= 4 s readable after landing
+    if single["count_up"]:
+        # StatHero counts over min(1300, land-120) ms -> finished before the word
+        assert single["land_ms"] - single["show_ms"] >= 570, single
+
+
+def test_quadrant_from_script_overlay():  # item 2
+    import visual_timeline as vt
+    ov = {"type": "quadrant", "title": "Four AI Strategies",
+          "x_axis": {"label": "Value-Chain Control"}, "y_axis": {"label": "Technological Breadth"},
+          "cells": [{"label": "Focused Differentiation", "x": "low", "y": "low"},
+                    {"label": "Vertical Integration", "x": "high", "y": "low"},
+                    {"label": "Collaborative Ecosystem", "x": "low", "y": "high"},
+                    {"label": "Platform Leadership", "x": "high", "y": "high"}],
+          "show_at_line": 2, "hide_at_line": 8}
+    q = vt.normalize_quadrant(ov)
+    assert q and len(q["cells"]) == 4
+    assert {(c["x"], c["y"]) for c in q["cells"]} == {(0, 0), (1, 0), (0, 1), (1, 1)}
+    card = vt.quadrant_card(q, title="Four AI Strategies")
+    assert card["type"] == "diagram" and card["kind"] == "quadrant"
+    assert card["quadrant"]["x_axis"]["label"] == "Value-Chain Control"
+    bad = dict(ov, cells=ov["cells"][:3])
+    assert vt.normalize_quadrant(bad) is None  # never invent a missing cell
+
+
+def test_quadrant_not_invented_for_plain_lists():  # items 2 + 10
+    import visual_timeline as vt
+    segs = _synthetic_episode()
+    ep = {"segments": segs}
+    assert vt.detect_quadrant(ep, [s["lines"] for s in segs]) is None
+
+
+def test_key_takeaways_always_pillars():  # item 9
+    import visual_timeline as vt
+    d = vt.bullets_to_diagram("Key Takeaways", ["Know your quadrant", "Align ambition", "Build the system"],
+                              {"pillars", "cycle", "compare"})
+    assert d and d["kind"] == "pillars", d
+
+
+def test_named_case_broll_queries():  # item 4
+    name, qs = bq.named_case_queries("Zillow lost $304 million when its home-flipping algorithm misjudged prices.")
+    assert name == "zillow" and qs, (name, qs)
+    assert any(w in " ".join(qs) for w in ("home", "house", "real estate")), qs
+    name, qs = bq.named_case_queries("Pfizer and BioNTech used AI to speed up the vaccine trial.")
+    assert name and any(w in " ".join(qs) for w in ("lab", "vaccine", "scientist")), (name, qs)
+    for q in qs:
+        assert bq.validate_query(q), q
+        assert "robot" not in q.lower()
+    assert bq.named_case_queries("We keep unpacking how the operating model changes.")[0] is None
+
+
+def test_karaoke_defaults_locked():  # item 8
+    import re
+    src = (HERE / "packages/remotion/src/templates/SegmentCard.tsx").read_text(encoding="utf-8")
+    peak = float(re.search(r"KARAOKE_SCALE_PEAK\s*=\s*([\d.]+)", src).group(1))
+    assert peak > 1.0
+    assert "LOCKED DEFAULTS" in src
+    assert re.search(r"transform:\s*`scale\(", src), "karaoke grow must use transform scale"
+    assert "voice_colors.json" in src
+    assert (HERE / "docs/visual-defaults.md").exists()
+
+
+def test_stathero_respects_land_and_static():  # items 1 + 6 (TSX contract)
+    src = (HERE / "packages/remotion/src/components/overlays/StatHero.tsx").read_text(encoding="utf-8")
+    assert "landMs" in src and "countWindowMs" in src and "isStaticStat" in src
+    ov = (HERE / "packages/remotion/src/components/overlays/StatOverlay.tsx").read_text(encoding="utf-8")
+    assert "QUALIFIER_RE" in ov and "up to" in ov
+
+
+def test_hook_retell_detector():  # item 3
+    import script_dedupe as sd
+    hook = [{"line_id": "s01_l01", "host_id": "B", "text": "Take General Motors: its AI designed a seat bracket 40% lighter and 20% stronger, but the factory could not build it."},
+            {"line_id": "s01_l02", "host_id": "A", "text": "Contrast that with Apple, which used AI to optimize metalenses for Face ID and shipped them."}]
+    retell = [{"line_id": "s02_l01", "host_id": "A", "text": "So why do projects fail?"},
+              {"line_id": "s02_l02", "host_id": "B", "text": "Take General Motors and the AI seat bracket design."},
+              {"line_id": "s02_l03", "host_id": "B", "text": "The design was 40% lighter and 20% stronger, but GM's factory could not build it."},
+              {"line_id": "s02_l04", "host_id": "B", "text": "Compare that to Apple optimizing metalenses for Face ID sensors with AI."}]
+    brief = [{"line_id": "s02_l01", "host_id": "A", "text": "That GM versus Apple contrast sets up the real question."},
+             {"line_id": "s02_l02", "host_id": "B", "text": "The framework has two dimensions: value-chain control and technological breadth."}]
+    mk = lambda nxt: {"segments": [{"segment_id": "s01_hook", "lines": hook}, {"segment_id": "s02", "lines": nxt}]}
+    assert sd.detect_hook_retell(mk(retell))["heavy"]
+    assert not sd.detect_hook_retell(mk(brief))["heavy"]
+    ep, rep = sd.dedupe_hook_retell(mk(retell), use_gemini=False, log=lambda s: None)
+    assert rep["action"] == "flagged_only" and ep["segments"][1]["lines"] == retell
+
+
+def test_factcheck_zero_claims_is_warning(monkeypatch=None):  # item 7
+    import os
+    import factcheck_episode as fc
+    import gemini_util as gu
+    saved = {k: os.environ.pop(k, None) for k in gu.KEY_ENV_NAMES}
+    try:
+        ep = {"segments": [{"segment_id": "s1", "lines": [{"line_id": "l1", "text": "It rose 99%."}]}]}
+        _, rep = fc.fact_check_episode(ep, "The source says 40 percent. " * 20, use_gemini=True)
+        assert rep["summary"]["status"] == "warning_unchecked", rep["summary"]
+        assert fc.factcheck_status_line(rep).startswith("WARNING")
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_gemini_util_falls_back_on_quota():  # item 7
+    import gemini_util as gu
+
+    class Quota(Exception):
+        pass
+
+    calls = []
+
+    def fake(key, model, prompt, cfg):
+        calls.append((key, model))
+        if model == "m1":
+            raise Quota("429 ResourceExhausted: quota GenerateRequestsPerDayPerProjectPerModel-FreeTier, retry in 30s")
+        return '{"claims": [{"line_id": "l1"}]}'
+
+    out, meta = gu.generate_json("p", models=["m1", "m2"], keys=["k1", "k2"], call=fake,
+                                 log=lambda s: None, sleep=lambda s: None)
+    assert meta["model"] == "m2" and out["claims"], meta
+    assert calls[:2] == [("k1", "m1"), ("k2", "m1")]
 
 
 if __name__ == "__main__":
