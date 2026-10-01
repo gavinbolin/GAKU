@@ -175,11 +175,11 @@ CONCEPTS: list[tuple[str, re.Pattern[str], list[str]]] = [
     ("governance", re.compile(r"\b(governance|risk|compliance|audit\w*|regulat\w+|controlled)\b", re.I),
      ["auditor reviewing documents", "compliance officer paperwork"]),
     ("collaboration", re.compile(r"\b(collaborat\w+|partners?\w*|cross-functional|business and (?:tech|development)|role clarity|together)\b", re.I),
-     ["cross functional team workshop", "colleagues brainstorming whiteboard", "coworkers sticky notes wall", "team huddle standing desk"]),
+     ["cross functional team workshop", "colleagues around a conference table", "coworkers sticky notes wall", "team huddle standing desk"]),
     ("executive", re.compile(r"\b(c-suite|ceo|executives?|board|decision rights|chief \w+ officer|cmo)\b", re.I),
      ["executives boardroom meeting", "ceo presenting boardroom", "business leaders conference table"]),
     ("workflow", re.compile(r"\b(workflows?|process\w*|mapp\w+|documentation norms|procedures?)\b", re.I),
-     ["process mapping whiteboard", "flowchart sticky notes wall", "team mapping workflow whiteboard"]),
+     ["operations manager reviewing documents", "colleagues reviewing printed workflow", "project schedule on a desk"]),
     ("pilot_rollout", re.compile(r"\b(pilot\w*|prototype|rollout|rolling it out|iterat\w+|week by week|weekly|feedback loop)\b", re.I),
      ["product team sprint review", "software testing team laptops", "team reviewing feedback notes"]),
     ("training", re.compile(r"\b(training|skills|upskill\w*|learning|mindsets?|workshop)\b", re.I),
@@ -207,7 +207,7 @@ EPISODE_FALLBACKS = [
     "business people reviewing documents",
     "team meeting conference room",
     "professional working laptop desk",
-    "coworkers whiteboard discussion",
+    "coworkers discussing printed notes",
 ]
 
 
@@ -338,8 +338,50 @@ BOARD_WRITING_ALT_RE = re.compile(
 )
 
 
-def photo_rejected(photo: dict[str, Any], context_text: str = "") -> str | None:
-    """Return a reject reason for a Pexels photo, or None when acceptable."""
+# Ghosting / double-exposure stock, off-topic atmosphere, and slide-label
+# templates ("PROMOTION", "GROWTH") read as the wrong graphic.
+GHOST_ALT_RE = re.compile(
+    r"\b(double[- ]exposure|multiple[- ]exposure|ghosting|"
+    r"ghost(?:ed|ly)? (?:image|figure|person|face|portrait)|"
+    r"surreal composite|superimposed (?:portrait|image|face)|doppelg(?:a|ä)nger)\b",
+    re.IGNORECASE,
+)
+ATMOSPHERIC_ALT_RE = re.compile(
+    r"\b(bokeh|lens flare|nebula|aurora|particle(?:s)? background|"
+    r"abstract (?:background|smoke|fog|particles?)|"
+    r"foggy (?:background|atmosphere)|smoke background|"
+    r"empty sky|cloudy sky background|defocused lights?|"
+    r"atmospheric (?:shot|background|fog))\b",
+    re.IGNORECASE,
+)
+ATMOSPHERE_CONTEXT_RE = re.compile(
+    r"\b(sky|weather|storm|sunset|sunrise|space|galaxy|aurora|fog|bokeh|nebula)\b",
+    re.IGNORECASE,
+)
+TEMPLATE_LABEL_RE = re.compile(
+    r"\b(promotion|growth|success|innovation|synergy|teamwork|motivation|excellence)\b",
+    re.IGNORECASE,
+)
+TEMPLATE_SLIDE_RE = re.compile(
+    r"\b(template|slides?|powerpoint|presentation|infographic|poster|banner|"
+    r"typography|word ?art|text overlay|title card|stock (?:photo|image|video|footage)|"
+    r"words?|lettering)\b",
+    re.IGNORECASE,
+)
+DIAGRAM_STOCK_RE = re.compile(
+    r"\b(white ?boards?|chalk ?boards?|flip ?charts?|templates?|powerpoint|"
+    r"infographics?|schematics?)\b",
+    re.IGNORECASE,
+)
+
+
+def photo_rejected(photo: dict[str, Any], context_text: str = "", role: str = "") -> str | None:
+    """Return a reject reason for a Pexels photo, or None when acceptable.
+
+    `role="diagram"` is a slot the plan promised as a real diagram: stock
+    whiteboards and template slides (PROMOTION / GROWTH) are rejected so the
+    Remotion diagram is what the viewer sees.
+    """
     alt = str(photo.get("alt") or "")
     url = str(photo.get("url") or photo.get("page_url") or "")
     blob = f"{alt} {url.replace('-', ' ')}"
@@ -351,6 +393,17 @@ def photo_rejected(photo: dict[str, Any], context_text: str = "") -> str | None:
     # off-topic text on screen (the "manta-ray whiteboard" during a concept beat).
     if BOARD_WRITING_ALT_RE.search(blob):
         return "text / board writing"
+    if GHOST_ALT_RE.search(blob):
+        return "ghosting / double exposure"
+    if ATMOSPHERIC_ALT_RE.search(blob) and not ATMOSPHERE_CONTEXT_RE.search(context_text or ""):
+        return "off-topic atmospheric"
+    # All-caps slide words, or a label sitting on a template / slide.
+    if re.search(r"\b(PROMOTION|GROWTH|SUCCESS|INNOVATION|SYNERGY)\b", alt):
+        return "stock slide label"
+    if TEMPLATE_LABEL_RE.search(alt) and TEMPLATE_SLIDE_RE.search(blob):
+        return "stock slide label"
+    if role == "diagram" and (DIAGRAM_STOCK_RE.search(blob) or TEMPLATE_LABEL_RE.search(alt)):
+        return "diagram slot stock template"
     return None
 
 
@@ -459,7 +512,7 @@ class PexelsPicker:
                 pid = str(photo.get("id"))
                 if pid in self.used:
                     continue
-                why = photo_rejected(photo, context_text)
+                why = photo_rejected(photo, context_text, role=role)
                 if why:
                     self.rejects.append({"query": q, "id": pid, "reason": why, "alt": photo.get("alt")})
                     continue

@@ -423,6 +423,198 @@ def test_gemini_util_falls_back_on_quota():  # item 7
     assert meta["model"] == "m1" and meta["key_index"] == 1, meta
 
 
+# ------------------------------------------------------- 2026-10-01 fixes
+def test_key_takeaways_never_ellipsis():  # item 1
+    import visual_timeline as vt
+    long = (
+        "Match the model's judgment to the decision the retrieval set can actually "
+        "support when the note in front of it is thin"
+    )
+    d = vt.bullets_to_diagram(
+        "Key Takeaways",
+        [long, "Align ambition with the quadrant you can staff", "Build the system that keeps the call honest"],
+        set(),
+    )
+    assert d and d["kind"] == "pillars", d
+    blob = json.dumps(d, ensure_ascii=False)
+    assert "…" not in blob and "..." not in blob
+    assert d["nodes"][0]["label"] == long
+    assert vt._card_duration(
+        {"type": "diagram", "kind": "pillars", "title": "Key Takeaways", "nodes": d["nodes"]}
+    ) >= 8000
+    src = (HERE / "packages/remotion/src/components/overlays/DiagramOverlay.tsx").read_text(encoding="utf-8")
+    assert "fitFontPx" in src
+    assert "textOverflow" not in src
+    assert "lineClamp" not in src
+
+
+def test_transition_stat_snaps_to_final():  # item 3
+    import visual_timeline as vt
+    assert vt.transition_final_value("from 16% to 99%") == "99%"
+    assert vt.transition_final_value("16% → 99%") == "99%"
+    assert vt.transition_final_value("5 to 10%") is None  # range, full string stays
+    shown, static = vt.normalize_stat_display("99%", "Accuracy moved from 16% to 99% after the fix.")
+    assert shown == "99%" and static, (shown, static)
+    shown, static = vt.normalize_stat_display("from 16% to 99%", "Accuracy moved from 16% to 99% after the fix.")
+    assert shown == "99%" and static
+    # A different figure on the same sentence is not rewritten to the landing value.
+    shown, _static = vt.normalize_stat_display("3", "It rose 3 times, from 16% to 99% on the same set.")
+    assert shown == "3×", shown
+    assert vt.stat_is_static("from 16% to 99%")
+    assert vt.stat_is_static("5 to 10%")
+    src = (HERE / "packages/remotion/src/components/overlays/StatOverlay.tsx").read_text(encoding="utf-8")
+    hero = (HERE / "packages/remotion/src/components/overlays/StatHero.tsx").read_text(encoding="utf-8")
+    assert "transitionFinal" in src and "canonicalStatValue" in src
+    assert "canonicalStatValue" in hero
+
+
+def test_multiplier_renders_times_and_bare_number_dropped():  # item 4
+    import visual_timeline as vt
+    assert vt.apply_multiplier_symbol("3x") == "3×"
+    assert vt.apply_multiplier_symbol("3 times") == "3×"
+    assert vt.normalize_stat_display("3", "Throughput rose 3 times once the cache landed.")[0] == "3×"
+    assert vt.normalize_stat_display("3×", "")[0] == "3×"
+    assert vt.normalize_stat_display("7", "There are 7 items on the list and none of them are a rate.")[0] is None
+    assert vt.is_bare_unitless("3")
+    assert not vt.is_bare_unitless("10,000")
+    assert not vt.is_bare_unitless("12%")
+    assert not vt.is_bare_unitless("$4 billion")
+
+
+def test_adjacent_same_value_stats_deduped():  # item 5
+    import visual_queue
+    import visual_timeline as vt
+
+    cards = [
+        {"type": "stat", "value": "99%", "label": "Accuracy", "desired": 1000, "prio": 1},
+        {"type": "stat", "value": "99%", "label": "Adoption", "desired": 9000, "prio": 1},
+        {"type": "diagram", "title": "Flow", "desired": 20000, "prio": 2},
+        {"type": "stat", "value": "99%", "label": "Later accuracy", "desired": 32000, "prio": 1},
+    ]
+    stats = [c for c in vt.dedupe_adjacent_stat_cards(cards) if c["type"] == "stat"]
+    assert [c["label"] for c in stats] == ["Accuracy", "Later accuracy"], stats
+
+    filler = "We keep unpacking how the operating model changes day to day work for teams."
+    lines = [{"line_id": f"l{k+1:02d}", "host_id": "AB"[k % 2], "text": filler} for k in range(12)]
+    lines[2]["text"] = "Model accuracy reached 99% on the held-out set."
+    lines[4]["text"] = "Adoption reached 99% in the pilot group that same week."
+    ep = {"topic": "t", "hosts": [{"id": "A"}, {"id": "B"}], "segments": [{
+        "segment_id": "s01", "title": "Accuracy", "lines": lines, "overlays": [
+            {"type": "stat", "label": "Accuracy", "value": "99%", "show_at_line": 3, "hide_at_line": 4},
+            {"type": "stat", "label": "Adoption", "value": "99%", "show_at_line": 5, "hide_at_line": 6},
+        ]}]}
+    clips = {"clips": [{"line_id": ln["line_id"], "duration_ms": 6000} for ln in lines]}
+    orig = bq.PexelsPicker.candidates
+    bq.PexelsPicker.candidates = _fake_candidates
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m = visual_queue.build_visual_manifest(ep, clips, Path(td), pexels_key="offline-test", audio_path=None)
+    finally:
+        bq.PexelsPicker.candidates = orig
+    beats = [b for v in m["visuals"] if v["template"] == "SegmentCard" for b in v["data"].get("beats") or []]
+    heroes = [b for b in beats if b["type"] == "stat" and "99" in str(b.get("value"))]
+    assert len(heroes) == 1, heroes
+
+
+def test_chapter_subtitles_are_unique():  # item 7
+    import re
+    import visual_timeline as vt
+
+    filler = "We keep unpacking how the operating model changes day to day work for teams."
+
+    def seg(i, title, distinctive):
+        lines = [{"line_id": f"s{i}_l{k}", "host_id": "A", "text": distinctive if k == 3 else filler} for k in range(8)]
+        return {
+            "segment_id": f"s{i}", "title": title, "lines": lines,
+            "visuals": [{"template": "TitleCard", "data": {"title": title, "subtitle": "Why it matters"}}],
+        }
+
+    segs = [
+        seg(1, "Opening", "Cold open image of a factory floor at dawn today."),
+        seg(2, "Judgment", "Judgment means the call the model makes when the retrieved note is thin."),
+        seg(3, "Retrieval", "Retrieval means which passages actually land in the prompt window."),
+        seg(4, "Close", "Thanks for listening through the wrap up today."),
+    ]
+    seg_lines = [[{"idx": k, "text": ln["text"], "line_id": ln["line_id"], "host": "A"}
+                  for k, ln in enumerate(s["lines"])] for s in segs]
+    durs = [48000, 48000, 48000, 20000]
+    ch = vt.pick_chapters({"segments": segs}, seg_lines, durs, sum(durs), [], lambda t: t)
+    subs = [c["subtitle"] for c in ch.values()]
+    assert len(subs) >= 2, ch
+    keys = [re.sub(r"[^a-z0-9]+", " ", s.lower()).strip() for s in subs]
+    assert len(keys) == len(set(keys)), subs
+    blob = " ".join(subs).lower()
+    assert "why it matters" not in blob, subs
+    assert "judgment" in blob or "thin" in blob
+    assert "retrieval" in blob or "passages" in blob
+
+
+def test_full_stat_string_stored_on_overlay():  # item 10
+    import visual_queue
+    import visual_timeline as vt
+
+    assert vt.normalize_stat_display(
+        "40%", "More than 40% of teams changed how they work."
+    )[0] == "More than 40%"
+    filler = "We keep unpacking how the operating model changes day to day work for teams."
+    lines = [{"line_id": f"l{k+1:02d}", "host_id": "A", "text": filler} for k in range(8)]
+    lines[0]["text"] = "More than 40% of teams changed how they work."
+    ep = {"topic": "t", "hosts": [{"id": "A"}, {"id": "B"}], "segments": [{
+        "segment_id": "s01", "title": "Retention", "lines": lines, "overlays": [
+            {"type": "stat", "label": "Teams", "value": "40%", "show_at_line": 1, "hide_at_line": 2},
+        ]}]}
+    clips = {"clips": [{"line_id": ln["line_id"], "duration_ms": 6000} for ln in lines]}
+    orig = bq.PexelsPicker.candidates
+    bq.PexelsPicker.candidates = _fake_candidates
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m = visual_queue.build_visual_manifest(ep, clips, Path(td), pexels_key="offline-test", audio_path=None)
+    finally:
+        bq.PexelsPicker.candidates = orig
+    beats = [b for v in m["visuals"] if v["template"] == "SegmentCard" for b in v["data"].get("beats") or []]
+    stat = next(b for b in beats if b["type"] == "stat")
+    assert stat["value"] == "More than 40%", stat
+
+
+def test_broll_rejects_ghosting_atmosphere_and_slide_labels():  # items 6 + 8
+    assert bq.photo_rejected({"alt": "Double exposure portrait of a businessman in the city"}, "budget meeting")
+    assert bq.photo_rejected({"alt": "Abstract bokeh lights background"}, "team meeting about retrieval")
+    assert bq.photo_rejected(
+        {"alt": "Business template with the words PROMOTION and GROWTH"},
+        "budget flow diagram",
+        role="diagram",
+    )
+    assert bq.photo_rejected(
+        {"alt": "Person standing at a whiteboard template"},
+        "draw the diagram",
+        role="diagram",
+    )
+    assert bq.photo_rejected({"alt": "Accountant reviewing a budget spreadsheet"}, "budget meeting") is None
+    for q in ("operations manager reviewing documents", "colleagues reviewing printed workflow", "project schedule on a desk"):
+        ok, why = bq.validate_query(q)
+        assert ok, (q, why)
+
+
+def test_explain_and_recap_get_a_graphic_without_a_seat():  # item 9
+    import visual_timeline as vt
+    lines = [
+        {"text": "Judgment is the call the model makes when retrieval comes back thin."},
+        {"text": "The retrieved note has to be enough to support that call in production."},
+    ]
+    seg = {"segment_id": "s03", "title": "Judgment", "lines": lines, "overlays": []}
+    assert vt.needs_strong_graphic(seg, lines) == "explain"
+    card = vt.synthesize_strong_graphic(seg, lines, "explain")
+    assert card and card["type"] == "diagram", card
+    recap_lines = [
+        {"text": "The first lesson is to match the call to the evidence you actually retrieved."},
+        {"text": "The second lesson is to measure the miss before you scale the pilot."},
+    ]
+    recap = {"segment_id": "s09_recap", "title": "Recap", "lines": recap_lines}
+    assert vt.needs_strong_graphic(recap, recap_lines) == "recap"
+    takeaways = vt.synthesize_strong_graphic(recap, recap_lines, "recap")
+    assert takeaways and takeaways["kind"] == "pillars" and "…" not in json.dumps(takeaways, ensure_ascii=False)
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

@@ -67,6 +67,29 @@ const MUTED = "rgba(245,240,232,0.72)";
 const PANEL = "linear-gradient(180deg, rgba(20,20,44,0.92) 0%, rgba(10,10,26,0.9) 100%)";
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif";
 
+/**
+ * Largest font (px) that wraps `text` inside width×maxHeight.
+ * Key Takeaways use this so a long pillar is never cut with an ellipsis.
+ */
+export const fitFontPx = (
+  text: string,
+  width: number,
+  maxHeight: number,
+  maxPx: number,
+  minPx = 15,
+  lineHeight = 1.25,
+): number => {
+  const t = (text || "").trim();
+  if (!t) return maxPx;
+  const boxW = Math.max(40, width);
+  for (let size = maxPx; size >= minPx; size -= 1) {
+    const charsPerLine = Math.max(4, Math.floor(boxW / (size * 0.54)));
+    const lines = Math.ceil(t.length / charsPerLine);
+    if (lines * size * lineHeight <= maxHeight) return size;
+  }
+  return minPx;
+};
+
 const reveal = (localMs: number, i: number, n: number, durationMs: number): number => {
   const window = Math.min(durationMs * 0.55, 900 + n * 900);
   const start = 250 + (window / Math.max(1, n)) * i;
@@ -248,13 +271,17 @@ const Hub: React.FC<DiagramOverlayProps> = ({ nodes = [], center, title, localMs
 
 const Pillars: React.FC<DiagramOverlayProps> = ({ nodes = [], localMs, durationMs, speakerColor }) => {
   const n = nodes.length;
-  const w = n >= 5 ? 290 : n === 4 ? 340 : 400;
+  const w = n >= 5 ? 290 : n === 4 ? 340 : n <= 2 ? 520 : 440;
   const base = interpolate(localMs, [100, 600], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-      <div style={{ display: "flex", gap: 26, alignItems: "flex-end" }}>
+      <div style={{ display: "flex", gap: 26, alignItems: "stretch" }}>
         {nodes.map((nd, i) => {
           const r = reveal(localMs, i, n, durationMs);
+          const innerW = w - 52;
+          const labelMaxH = nd.detail ? 150 : 280;
+          const labelPx = fitFontPx(nd.label, innerW, labelMaxH, nd.detail ? 30 : 32, 16);
+          const detailPx = nd.detail ? fitFontPx(nd.detail, innerW, 140, 22, 14) : 22;
           return (
             <div
               key={i}
@@ -275,10 +302,33 @@ const Pillars: React.FC<DiagramOverlayProps> = ({ nodes = [], localMs, durationM
                 gap: 14,
               }}
             >
-              <div style={{ fontSize: nd.detail ? 32 : 30, fontWeight: 800, color: nd.detail ? speakerColor : TEXT, lineHeight: 1.2 }}>
+              <div
+                style={{
+                  fontSize: labelPx,
+                  fontWeight: 800,
+                  color: nd.detail ? speakerColor : TEXT,
+                  lineHeight: 1.25,
+                  whiteSpace: "normal",
+                  overflowWrap: "break-word",
+                  wordBreak: "break-word",
+                }}
+              >
                 {nd.label}
               </div>
-              {nd.detail ? <div style={{ fontSize: 25, color: TEXT, lineHeight: 1.3 }}>{nd.detail}</div> : null}
+              {nd.detail ? (
+                <div
+                  style={{
+                    fontSize: detailPx,
+                    color: TEXT,
+                    lineHeight: 1.3,
+                    whiteSpace: "normal",
+                    overflowWrap: "break-word",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {nd.detail}
+                </div>
+              ) : null}
             </div>
           );
         })}

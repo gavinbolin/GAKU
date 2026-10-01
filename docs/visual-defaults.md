@@ -6,6 +6,7 @@ them. Change them only on purpose, and update this file and
 `tests/test_pipeline_upgrade.py` when you do.
 
 ## Karaoke captions + host colours
+Locked default. No flag turns this off.
 - The current word takes the **speaker's colour** and grows with
   `transform: scale()` (`KARAOKE_SCALE_PEAK` in `SegmentCard.tsx`). Font weight
   stays at 800, so nothing reflows.
@@ -58,4 +59,28 @@ them. Change them only on purpose, and update this file and
   - Pfizer/BioNTech → lab and vaccine
 - Those queries are used first for windows that mention the case (or the
   previous ~15 s of speech). The robot, text and board-writing filters still
-  apply.
+  apply. Also rejected: ghosting / double-exposure clips, off-topic
+  atmospheric footage, and stock slides whose labels are unrelated
+  (PROMOTION, GROWTH, and the same class of template words).
+
+## Key Takeaways, stats, chapters (2026-10-01)
+- Key Takeaways pillars keep the full item text. Remotion wraps and shrinks
+  the font (`fitFontPx`). The planner does not store an ellipsis. The card
+  holds at least 8 seconds.
+- The script prompt asks the recap to run long enough for that hold, and the
+  close to add a short spoken sign-off plus a light CTA.
+- "From 16% to 99%" snaps to **99%** and does not count through a midpoint.
+  Ranges like "5 to 10%" and "25-35%" still show the full range, static.
+- Multipliers render with × (`3×`). A bare number with no unit (a lone `3`)
+  is dropped.
+- Two stat heroes with the same value in the same beat or the next beat
+  collapse to one.
+- Chapter-chip subtitles are unique. A collision is replaced from that
+  chapter's own lines.
+- The overlay `value` is the full string Remotion draws (`More than 40%`,
+  `99%`, `3×`).
+- A scripted diagram (flow, comparison, timeline, pillars) is a Remotion
+  diagram, including the budget-flow style. Diagram slots reject whiteboard
+  and template-slide B-roll.
+- Judgment / RAG explanatory sections and the recap get at least one strong
+  graphic (stat, diagram, bullet card, or quadrant) even with no visual seat.

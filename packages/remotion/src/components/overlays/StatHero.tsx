@@ -1,6 +1,13 @@
 import React from "react";
 import { interpolate } from "remotion";
-import { countUpAt, isSimpleSingleNumber, isStaticStat, LEADING_QUALIFIER_RE } from "./StatOverlay";
+import {
+  canonicalStatValue,
+  countUpAt,
+  isSimpleSingleNumber,
+  isStaticStat,
+  LEADING_QUALIFIER_RE,
+  transitionFinal,
+} from "./StatOverlay";
 
 /**
  * StatHero -- one dedicated, full-stage hit per key stat (2026-09-25 items 1+7).
@@ -83,12 +90,18 @@ export const StatHero: React.FC<StatHeroProps> = ({
   landMs,
   countUp,
 }) => {
-  const qm = LEADING_QUALIFIER_RE.exec(value || "");
+  // Snap "from 16% to 99%" to "99%" and "3x" to "3×" before any count-up.
+  const shownValue = canonicalStatValue(value);
+  const qm = LEADING_QUALIFIER_RE.exec(shownValue || "");
   const qualifier = qm ? qm[1] : "";
-  const body = qm ? (value || "").slice(qm[0].length) : value;
+  const body = qm ? (shownValue || "").slice(qm[0].length) : shownValue;
   const { core, rest } = splitStatValue(body);
-  // Any range / limit / approximation / extra digits => whole value static.
-  const countable = !isStaticStat(value) && !RANGE_ANY_RE.test(value) && !/\d/.test(rest);
+  // Any range / limit / approximation / transition / extra digits => whole value static.
+  const countable =
+    transitionFinal(value) == null &&
+    !isStaticStat(shownValue) &&
+    !RANGE_ANY_RE.test(shownValue) &&
+    !/\d/.test(rest);
   const windowMs = countWindowMs(landMs, countUp);
   const inT = interpolate(localMs, [0, 450], [0, 1], {
     extrapolateLeft: "clamp",

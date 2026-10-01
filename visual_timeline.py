@@ -28,6 +28,7 @@ import json
 import math
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
@@ -262,6 +263,138 @@ def enrich_stat_value(value: str, spoken: str) -> str:
     return f"{qual}{cur}{num}{unit}"
 
 
+# "from 16% to 99%" / "16% → 99%" is a change, not a range. Snap to the final
+# value so a count-up can never show 61% while the line already says 99%.
+# "5 to 10%" has no unit on the first number and no arrow, so it stays a range.
+_TRANSITION_RE = re.compile(
+    r"(?P<a>\d[\d,]*(?:\.\d+)?)\s*(?P<ua>percent|%|×|x)?"
+    r"\s*(?:→|->|to)\s*"
+    r"(?P<b>\d[\d,]*(?:\.\d+)?)\s*(?P<ub>percent|%|×|x)?",
+    re.I,
+)
+
+
+def _transition_parts(text: str) -> tuple[str, str, str] | None:
+    """(final display, start digits, end digits) for a from-X-to-Y change."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    m = _TRANSITION_RE.search(t)
+    if not m:
+        return None
+    ua = (m.group("ua") or "").lower()
+    ub = (m.group("ub") or "").lower()
+    spanned = t[m.start(): m.end()]
+    if not ua and not re.search(r"→|->", spanned):
+        return None
+    unit = ub or ua
+    if unit in ("percent", "%"):
+        unit = "%"
+    elif unit in ("x", "×"):
+        unit = "×"
+    else:
+        unit = ""
+    return f"{m.group('b')}{unit}", m.group("a").replace(",", ""), m.group("b").replace(",", "")
+
+
+def transition_final_value(text: str) -> str | None:
+    """Final display value for a from-X-to-Y change, or None when `text` is not one."""
+    parts = _transition_parts(text)
+    return parts[0] if parts else None
+
+
+def apply_multiplier_symbol(value: str, spoken: str = "") -> str:
+    """Render a multiplier with the × sign ('3x' / '3 times' → '3×')."""
+    v = (value or "").strip()
+    m = re.fullmatch(
+        r"(?P<pre>.*?)(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?:x|×|times)\b(?P<post>.*)",
+        v,
+        re.I,
+    )
+    if m:
+        post = (m.group("post") or "").strip()
+        if post == "" or re.fullmatch(r"[A-Za-z]+", post):
+            pre = (m.group("pre") or "").strip()
+            body = f"{m.group('num')}×" + (f" {post}" if post else "")
+            return f"{pre} {body}".strip() if pre else body
+    if re.fullmatch(r"\d[\d,]*(?:\.\d+)?", v) and re.search(
+        r"(?<![\d.])" + re.escape(v) + r"(?![\d])\s*(?:x|×|times)\b", spoken or "", re.I,
+    ):
+        return f"{v}×"
+    return v
+
+
+def is_bare_unitless(value: str) -> bool:
+    """Small number with no unit, currency, or scale ('3', 'Over 3'). '10,000' is not bare."""
+    v = (value or "").strip()
+    v = re.sub(
+        r"^(?:" + "|".join(re.escape(w) for w in sorted(_QUALIFIER_WORDS, key=len, reverse=True)) + r")\s+",
+        "",
+        v,
+        count=1,
+        flags=re.I,
+    ).strip()
+    return bool(re.fullmatch(r"\d{1,3}(?:\.\d+)?", v))
+
+
+def normalize_stat_display(value: str, spoken: str = "") -> tuple[str | None, bool]:
+    """(display string, force_static). None drops the callout.
+
+    The string is what Remotion draws and what the overlay JSON stores
+    ('More than 40%', '99%', '3×') — not a shortened core.
+    A from-X%-to-Y% change snaps to the final value and never counts up.
+    """
+    raw = (value or "").strip()
+    spoken = spoken or ""
+    own = _transition_parts(raw)
+    if own:
+        return own[0], True
+    heard = _transition_parts(spoken)
+    if heard:
+        # Snap only when this callout's number is an endpoint of that change,
+        # so a nearby "3 times" on the same line is not rewritten to 99%.
+        raw_toks = {t.replace(",", "") for t in num_tokens(raw)}
+        if raw_toks & {heard[1], heard[2]}:
+            return heard[0], True
+    shown = apply_multiplier_symbol(enrich_stat_value(raw, spoken), spoken)
+    if is_bare_unitless(shown):
+        return None, True
+    return shown, stat_is_static(shown)
+
+
+def stat_values_collide(a: str, b: str) -> bool:
+    sa, sb = stat_signature(a), stat_signature(b)
+    return bool(sa) and sa == sb
+
+
+def dedupe_adjacent_stat_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One stat hero per value when two would land in the same beat or the next one.
+
+    A non-stat card between them (diagram, chapter, bullets) breaks adjacency,
+    so the same figure can return later in the episode.
+    """
+    order = sorted(
+        range(len(cards)),
+        key=lambda i: (int(cards[i].get("desired") or 0), int(cards[i].get("prio") or 9), i),
+    )
+    drop: set[int] = set()
+    prev_stat: int | None = None
+    for i in order:
+        card = cards[i]
+        if card.get("type") != "stat":
+            prev_stat = None
+            continue
+        if prev_stat is not None and stat_values_collide(
+            str(cards[prev_stat].get("value") or ""), str(card.get("value") or ""),
+        ):
+            drop.add(i)
+            continue
+        prev_stat = i
+    if not drop:
+        return cards
+    return [c for i, c in enumerate(cards) if i not in drop]
+
+
 def collect_stats(
     episode: dict[str, Any],
     seg_lines: list[list[dict[str, Any]]],
@@ -310,7 +443,24 @@ def collect_stats(
         toks = num_tokens(st["value"])
         if toks and not _text_has_numbers(seg_text, toks):
             continue   # ungrounded -> drop (on-screen digits must match speech)
-        sig = stat_signature(st["value"])
+        # Spoken line: first line (from hint-2 onward, else anywhere) that says every number.
+        spoken_idx = None
+        if toks:
+            order = list(range(max(0, st["hint_idx"] - 2), len(lines))) + list(range(0, max(0, st["hint_idx"] - 2)))
+            for i in order:
+                if _text_has_numbers(lines[i]["text"], toks):
+                    spoken_idx = i
+                    break
+        idx = spoken_idx if spoken_idx is not None else max(0, min(len(lines) - 1, st["hint_idx"]))
+        spoken = lines[spoken_idx]["text"] if spoken_idx is not None and lines else ""
+        display, force_static = normalize_stat_display(st["value"], spoken)
+        if not display:
+            continue   # bare number with no unit (a lone "3") — don't hero it
+        disp_toks = num_tokens(display)
+        if disp_toks and not _text_has_numbers(seg_text, disp_toks):
+            continue
+        st = {**st, "value": display}
+        sig = stat_signature(display)
         dup = None
         for k in kept:
             if k["signature"] != sig:
@@ -325,23 +475,12 @@ def collect_stats(
             if not dup["subtext"] and st["subtext"]:
                 dup["subtext"] = st["subtext"]
             continue
-        # Spoken line: first line (from hint-2 onward, else anywhere) that says every number.
-        spoken_idx = None
-        if toks:
-            order = list(range(max(0, st["hint_idx"] - 2), len(lines))) + list(range(0, max(0, st["hint_idx"] - 2)))
-            for i in order:
-                if _text_has_numbers(lines[i]["text"], toks):
-                    spoken_idx = i
-                    break
-        idx = spoken_idx if spoken_idx is not None else max(0, min(len(lines) - 1, st["hint_idx"]))
-        if spoken_idx is not None:
-            st = {**st, "value": enrich_stat_value(st["value"], lines[spoken_idx]["text"])}
         kept.append({
             **st,
             "signature": sig,
             "line_idx": idx,
-            "is_range": stat_is_static(st["value"]),
-            "companions": _companions(st["subtext"], st["value"], seg_text),
+            "is_range": force_static or stat_is_static(display),
+            "companions": _companions(st["subtext"], display, seg_text),
             "duplicates": [],
         })
     return kept
@@ -383,6 +522,88 @@ def _chapter_hook(seg: dict[str, Any], lines: list[dict[str, Any]], title: str, 
     return _truncate(first, 70)
 
 
+def _subtitle_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text or "") if s.strip()]
+
+
+def _content_subtitle_candidates(
+    seg: dict[str, Any], lines: list[dict[str, Any]], title: str, stats: list[dict[str, Any]],
+) -> list[str]:
+    out: list[str] = []
+    hook = _chapter_hook(seg, lines, title, stats)
+    if hook:
+        out.append(hook)
+    for ov in seg.get("overlays") or []:
+        if not isinstance(ov, dict):
+            continue
+        if ov.get("title"):
+            out.append(str(ov["title"]))
+        if ov.get("type") == "bullets":
+            for it in ov.get("items") or []:
+                lab = _split_label(str(it))[0]
+                if lab:
+                    out.append(lab)
+    for ln in lines:
+        out.extend(_sentences(ln.get("text") or ""))
+    return out
+
+
+def _shared_with_siblings(sub: str, sibling_text: str) -> bool:
+    """True when `sub` (even if truncated) is the same sentence another chapter says."""
+    key = _subtitle_key((sub or "").replace("…", ""))
+    if not key:
+        return True
+    sib_key = _subtitle_key(sibling_text)
+    if key in sib_key:
+        return True
+    for sent in _sentences(sibling_text or ""):
+        sk = _subtitle_key(sent)
+        if not sk:
+            continue
+        if sk.startswith(key) or key.startswith(sk):
+            return True
+    return False
+
+
+def unique_chapter_subtitle(
+    preferred: str,
+    seg: dict[str, Any],
+    lines: list[dict[str, Any]],
+    title: str,
+    stats: list[dict[str, Any]],
+    *,
+    blocked: set[str],
+    sibling_text: str,
+) -> str:
+    """Subtitle that is not in `blocked`. Collisions prefer a sentence that
+    belongs to this chapter and not to the other chapters."""
+    ranked: list[tuple[int, str]] = []
+    for raw in [preferred] + _content_subtitle_candidates(seg, lines, title, stats):
+        sub = _truncate(re.sub(r"\s+", " ", (raw or "")).strip(), 90)
+        key = _subtitle_key(sub.replace("…", ""))
+        if not sub or not key or key in blocked:
+            continue
+        own = not _shared_with_siblings(sub, sibling_text)
+        ranked.append((0 if own else 1, sub))
+    if ranked:
+        ranked.sort(key=lambda t: t[0])
+        return ranked[0][1]
+    for w in _norm_words(" ".join(ln.get("text") or "" for ln in lines)):
+        if w in set(_norm_words(title)):
+            continue
+        if _subtitle_key(w) not in blocked and w not in siblings:
+            return w
+    n = 2
+    base = _truncate(preferred or title or "Chapter", 70)
+    while _subtitle_key(f"{base} {n}") in blocked:
+        n += 1
+    return f"{base} {n}"
+
+
 def pick_chapters(
     episode: dict[str, Any],
     seg_lines: list[list[dict[str, Any]]],
@@ -412,7 +633,7 @@ def pick_chapters(
         rest = sorted((si for si in mid if si not in chosen), key=lambda si: seg_durations[si], reverse=True)
         for si in rest[: target - len(chosen)]:
             chosen[si] = {"title": "", "subtitle": "", "source": "auto"}
-    out: dict[int, dict[str, Any]] = {}
+    drafts: list[tuple[int, dict[str, Any], str, str, str]] = []
     for num, si in enumerate(sorted(chosen), start=2):
         seg = dict(segs[si])
         seg["_idx"] = si
@@ -420,8 +641,29 @@ def pick_chapters(
         ch = chosen[si]
         title = ch["title"] or base_title
         sub = ch["subtitle"] or _chapter_hook(seg, seg_lines[si], title, stats)
-        out[si] = {"title": _truncate(title, 60), "subtitle": _truncate(sub, 90),
-                   "chapter_number": si + 1, "source": ch["source"]}
+        drafts.append((si, seg, title, sub, ch["source"]))
+    counts = Counter(_subtitle_key(sub) for _si, _seg, _title, sub, _src in drafts)
+    collided = {k for k, n in counts.items() if k and n > 1}
+    used: set[str] = set()
+    out: dict[int, dict[str, Any]] = {}
+    for si, seg, title, sub, source in drafts:
+        key = _subtitle_key(sub)
+        sibling = " ".join(
+            ln.get("text") or ""
+            for sj, lines in enumerate(seg_lines)
+            if sj != si
+            for ln in lines
+        )
+        if not key or key in collided or key in used:
+            sub = unique_chapter_subtitle(
+                sub, seg, seg_lines[si], title, stats,
+                blocked=collided | used, sibling_text=sibling,
+            )
+        else:
+            sub = _truncate(re.sub(r"\s+", " ", sub).strip(), 90)
+        used.add(_subtitle_key(sub))
+        out[si] = {"title": _truncate(title, 60), "subtitle": sub,
+                   "chapter_number": si + 1, "source": source}
     return out
 
 
@@ -468,7 +710,8 @@ def bullets_to_diagram(title: str, items: list[str], used_kinds: set[str]) -> di
     if KEY_TAKEAWAYS_RE.search(title or ""):
         # Locked default (2026-09-28 item 9): the closing "Key Takeaways" card
         # is always the multi-box pillars card, even if pillars was used earlier.
-        nodes = [{"label": _truncate(lab, 44 if det else 64), "detail": _truncate(det, 70)} for lab, det in pairs]
+        # Full text — Pillars wraps and shrinks the font. Never store an ellipsis.
+        nodes = [{"label": lab, "detail": det} for lab, det in pairs]
         return {"kind": "pillars", "title": title, "nodes": nodes[:6], "center": ""}
     if _HUB_RE.search(title or ""):
         kind = "hub"
@@ -570,7 +813,11 @@ def _card_duration(card: dict[str, Any]) -> int:
         if card.get("kind") in ("quote", "definition"):
             return QUOTE_MS
         n = len(card.get("nodes") or card.get("columns") or [])
-        return int(_clamp(4000 + 2200 * n, 9000, 15000))
+        dur = int(_clamp(4000 + 2200 * n, 9000, 15000))
+        # Key Takeaways stay up long enough to read every pillar (at least ~8s).
+        if KEY_TAKEAWAYS_RE.search(str(card.get("title") or "")):
+            return max(8000, dur)
+        return dur
     if t == "bullets":
         n = len(card.get("items") or [])
         return int(_clamp(3000 + 2000 * n, 8000, 14000))
@@ -820,6 +1067,63 @@ def quadrant_card(q: dict[str, Any], *, title: str = "", highlight: int | None =
 
 
 # ---------------------------------------------------------------------------
+# judgment / RAG sections and the recap always get one strong graphic
+# ---------------------------------------------------------------------------
+
+_RECAP_SEG_RE = re.compile(
+    r"\b(recaps?|take-?aways?|wrap[- ]?up|what we learned|closing thoughts)\b", re.I,
+)
+_JUDGMENT_RAG_RE = re.compile(
+    r"\b(judg(?:e)?ments?|retrieval[- ]augmented|\brag\b|retriev\w+|hallucin\w+)\b", re.I,
+)
+_DIAGRAM_SLOT_RE = re.compile(
+    r"\b(diagrams?|flowcharts?|white ?boards?|schematics?|infographics?)\b", re.I,
+)
+
+
+def needs_strong_graphic(seg: dict[str, Any], lines: list[dict[str, Any]]) -> str | None:
+    """'recap' or 'explain' when the segment must show a stat, diagram, bullets, or quadrant."""
+    title_id = f"{seg.get('title') or ''} {seg.get('segment_id') or ''}"
+    if _RECAP_SEG_RE.search(title_id):
+        return "recap"
+    blob = title_id + " " + " ".join(ln.get("text") or "" for ln in lines)
+    if _JUDGMENT_RAG_RE.search(blob):
+        return "explain"
+    return None
+
+
+def _has_strong_graphic(cards: list[dict[str, Any]]) -> bool:
+    return any(c.get("type") in ("stat", "diagram", "bullets", "chart") for c in cards)
+
+
+def synthesize_strong_graphic(
+    seg: dict[str, Any], lines: list[dict[str, Any]], kind: str,
+) -> dict[str, Any] | None:
+    """A real card from this segment's own lines when the script left no visual seat."""
+    items: list[str] = []
+    for ln in lines:
+        for sent in _sentences(ln.get("text") or ""):
+            if len(sent) < 24:
+                continue
+            items.append(sent if kind == "recap" else _truncate(sent, 110))
+            if len(items) >= 4:
+                break
+        if len(items) >= 4:
+            break
+    if len(items) < 2:
+        return None
+    if kind == "recap":
+        dia = bullets_to_diagram("Key Takeaways", items, set())
+        if dia:
+            return {"type": "diagram", **dia}
+    title = str(seg.get("title") or "How it fits")
+    return {
+        "type": "diagram", "kind": "pillars", "title": title, "center": "",
+        "nodes": [{"label": it, "detail": ""} for it in items[:4]],
+    }
+
+
+# ---------------------------------------------------------------------------
 # scheduling
 # ---------------------------------------------------------------------------
 
@@ -843,8 +1147,13 @@ def _place(card: dict[str, Any], lo: int, hi: int, busy: list[tuple[int, int]]) 
             if not _overlaps(t, t + dur, busy, CARD_PAD_MS):
                 return t, t + dur
     if card["type"] in ("diagram", "bullets", "chart") and dur > 7000:
-        card = {**card, "dur": 7000}
-        return _place(card, lo, hi, busy)
+        # Key Takeaways never shrink below ~8s. Other cards may retry at 7s.
+        floor = 8000 if (
+            card["type"] == "diagram" and KEY_TAKEAWAYS_RE.search(str(card.get("title") or ""))
+        ) else 7000
+        if dur > floor:
+            return _place({**card, "dur": floor}, lo, hi, busy)
+        return None
     return None
 
 
@@ -894,6 +1203,7 @@ def plan_episode(
 
     recent_queries: list[str] = []
     case_uses: dict[str, int] = {}
+    prev_edge_value = ""
     per_segment: list[dict[str, Any]] = []
     report = {"segments": [], "stats": [], "chapters": [], "broll": [], "backdrops": [], "dropped": [],
               "quadrant": None}
@@ -1000,6 +1310,39 @@ def plan_episode(
                          "speakerColor": _dominant_color(lines, idx, idx, color_a, color_b)})
             cards.append(card)
 
+        if not _has_strong_graphic(cards):
+            why = needs_strong_graphic(seg, lines)
+            if why:
+                extra = synthesize_strong_graphic(seg, lines, why)
+                if extra:
+                    anchor_i = min(1, len(lines) - 1) if lines else 0
+                    extra.update({
+                        "desired": lines[anchor_i]["start"] if lines else cs,
+                        "prio": 2,
+                        "speakerColor": _dominant_color(lines, 0, anchor_i, color_a, color_b) if lines else color_a,
+                    })
+                    cards.append(extra)
+                    log(f"[plan] strong graphic ({why}) for segment {si + 1}: {extra.get('title') or extra.get('kind')}")
+
+        before_dedupe = len(cards)
+        cards = dedupe_adjacent_stat_cards(cards)
+        if len(cards) < before_dedupe:
+            report["dropped"].append({
+                "segment": si + 1, "type": "stat", "title": "duplicate value", "reason": "adjacent beat",
+            })
+        if prev_edge_value:
+            ordered = sorted(cards, key=lambda c: (int(c.get("desired") or 0), int(c.get("prio") or 9)))
+            for c in ordered:
+                if c.get("type") == "chapter":
+                    continue
+                if c.get("type") == "stat" and stat_values_collide(prev_edge_value, str(c.get("value") or "")):
+                    cards = [x for x in cards if x is not c]
+                    report["dropped"].append({
+                        "segment": si + 1, "type": "stat", "title": c.get("value"),
+                        "reason": "adjacent-segment duplicate",
+                    })
+                break
+
         # --- place cards by priority (no overlaps => nothing masks a stat) ---
         busy: list[tuple[int, int]] = []
         placed: list[dict[str, Any]] = []
@@ -1019,6 +1362,32 @@ def plan_episode(
                     slot = (slot[0], max(slot[1], min(slot[1] + short, nxt)))
             busy.append(slot)
             placed.append({**card, "start": slot[0], "end": slot[1]})
+
+        # A scripted FlowDiagram / comparison / timeline is a Remotion diagram.
+        # If placement could not fit it, force a short one instead of leaving
+        # the slot to whiteboard or template B-roll.
+        if not any(p.get("type") == "diagram" for p in placed):
+            for v in seg.get("visuals") or []:
+                if not isinstance(v, dict):
+                    continue
+                promised = _visual_to_card(v)
+                if not promised or promised.get("type") != "diagram":
+                    continue
+                dur = min(9000, max(6000, (ce - cs) // 2))
+                start = cs + 200
+                for p in list(placed):
+                    if p["type"] == "stat" and p["start"] < start + dur and start < p["end"]:
+                        start = p["end"] + CARD_PAD_MS
+                end = min(ce - 300, start + dur)
+                if end - start < 5000:
+                    break
+                placed = [
+                    p for p in placed
+                    if p["type"] == "stat" or p["end"] <= start or p["start"] >= end
+                ]
+                placed.append({**promised, "start": start, "end": end, "speakerColor": color_a})
+                log(f"[plan] forced Remotion diagram in segment {si + 1} ({promised.get('kind')})")
+                break
 
         # --- B-roll cuts in the gaps (item 2) ---
         seg_words = words_by_seg.get(si, [])
@@ -1081,7 +1450,10 @@ def plan_episode(
             local = bq.local_query_candidates(wtext, ctx, salt=salt, recent=recent_queries[-4:])
             salt += 1
             queries += [q for q in local if q not in queries]
-            photo = picker.pick(queries, context_text=f"{wtext} {ctx}", role="broll") if picker else None
+            slot_blob = f"{wtext} {' '.join(queries[:4])}"
+            # Diagram-shaped windows reject whiteboard / PROMOTION-GROWTH slides.
+            role = "diagram" if _DIAGRAM_SLOT_RE.search(slot_blob) else "broll"
+            photo = picker.pick(queries, context_text=f"{wtext} {ctx}", role=role) if picker else None
             entry = {"start": b0, "end": b1, "queries": queries[:4], "gemini": gem[:3], "named_case": case_name,
                      "photo_url": (photo or {}).get("url") or "", "photo_id": (photo or {}).get("id"),
                      "query": (photo or {}).get("query") or (queries[0] if queries else ""),
@@ -1136,6 +1508,11 @@ def plan_episode(
             longest_static = max(longest_static, b["show_ms"] - cur)
             cur = max(cur, b["hide_ms"])
         longest_static = max(longest_static, (ce - cs) - cur)
+        content_cards = [p for p in sorted(placed, key=lambda c: c["start"]) if p.get("type") != "broll"]
+        prev_edge_value = (
+            str(content_cards[-1].get("value") or "")
+            if content_cards and content_cards[-1].get("type") == "stat" else ""
+        )
         per_segment.append({"beats": beats, "backdrops": bds})
         report["segments"].append({
             "segment": si + 1, "title": seg_title, "duration_s": round((ce - cs) / 1000, 1),
@@ -1171,4 +1548,7 @@ def plan_episode(
 
 
 __all__ = ["plan_episode", "collect_stats", "pick_chapters", "bullets_to_diagram", "stat_signature",
-           "stat_is_static", "enrich_stat_value", "detect_quadrant", "normalize_quadrant", "stat_hold_ms"]
+           "stat_is_static", "enrich_stat_value", "normalize_stat_display", "transition_final_value",
+           "apply_multiplier_symbol", "is_bare_unitless", "dedupe_adjacent_stat_cards",
+           "unique_chapter_subtitle", "needs_strong_graphic", "synthesize_strong_graphic",
+           "detect_quadrant", "normalize_quadrant", "stat_hold_ms"]

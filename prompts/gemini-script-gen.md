@@ -58,10 +58,15 @@ Every episode has exactly this shape:
 2. **Beats** (the bulk of the episode — count scales with duration)
    - Each beat is one idea. Title it like a chapter heading.
    - Every beat should land one *takeaway* the listener could repeat to a friend.
-3. **Recap** (1 segment, ~30s)
-   - Host A summarizes what they now understand. Host B confirms / refines.
-4. **Close** (1 segment, ~10–15s)
-   - Quick sign-off. No CTAs, no "smash that subscribe."
+3. **Recap** (1 segment, ~45–60s)
+   - Host A walks the takeaways one by one. Host B confirms / refines.
+   - Give the Key Takeaways card at least 8 seconds of speech under it. Do not
+     end the recap the moment the list is named.
+4. **Close** (1 segment, ~20–25s)
+   - A short spoken sign-off, then a light CTA so the episode does not cut off.
+   - One line that lands the idea, then one line inviting the listener to try it
+     or follow the show ("try this on the next decision you make", "the next
+     episode picks up from here"). Not "smash that subscribe." Not a host's name.
 
 ### Scale to the requested duration
 
@@ -235,7 +240,10 @@ emit ONE `quadrant` overlay in the segment that introduces the framework:
   repeat the overlay with `"highlight": "<that cell's label>"`.
 - Bullets stay the default everywhere else; don't turn lists into quadrants.
 - The recap segment includes a bullets overlay titled **"Key Takeaways"**
-  (rendered as the Key Takeaways pillars card).
+  (rendered as the Key Takeaways pillars card). Write each item in full — the
+  card wraps or shrinks type, it does not cut a takeaway with an ellipsis.
+  The recap's spoken lines must hold that card for at least 8 seconds, and the
+  close adds the sign-off / CTA beat above so the ending is not abrupt.
 
 #### 2026-09-28: don't retell the hook
 
@@ -488,5 +496,12 @@ rotating B-roll. Write for that:
 - For frameworks, processes, operating models, and readiness checklists,
   prefer `FlowDiagram` (ordered steps) or `ConceptComparison` (two columns);
   in bullet items prefer "Label: short detail" so they render as real
-  diagram nodes (flow / hub / pillars) instead of a text box.
+  diagram nodes (flow / hub / pillars) instead of a text box. A promised
+  diagram is drawn in Remotion (the budget-flow style), never as a stock
+  whiteboard or a slide that says PROMOTION / GROWTH.
+- Judgment / RAG explanatory beats and the recap each need one strong graphic
+  (stat, diagram, bullet card, or quadrant) even when you are short on seats.
+- Stat strings are stored whole ("More than 40%", "3×"). A "from 16% to 99%"
+  change is the final number only, snapped, not a count-up. A bare "3" with
+  no unit is omitted; a multiplier is "3×".
 

@@ -1,0 +1,110 @@
+{
+  "durationInFrames": 870,
+  "title": "Embracing the fixes",
+  "photo_url": "",
+  "host_a_name": "Alex",
+  "host_b_name": "Jordan",
+  "host_a_color": "#F59E0B",
+  "host_b_color": "#10B981",
+  "current_speaker": "B",
+  "segment_number": 2,
+  "sentence_timings": [
+    {
+      "speaker": "B",
+      "start_ms": 7000,
+      "end_ms": 10600,
+      "words": [
+        {"word": "Accuracy", "speaker": "B", "start_ms": 7100, "end_ms": 7700},
+        {"word": "moved", "speaker": "B", "start_ms": 7700, "end_ms": 8200},
+        {"word": "from", "speaker": "B", "start_ms": 8200, "end_ms": 8600},
+        {"word": "16%", "speaker": "B", "start_ms": 8600, "end_ms": 9200},
+        {"word": "to", "speaker": "B", "start_ms": 9200, "end_ms": 9600},
+        {"word": "99%.", "speaker": "B", "start_ms": 9600, "end_ms": 10500}
+      ]
+    }
+  ],
+  "graphics": [],
+  "overlays": [],
+  "backdrops": [],
+  "beats": [
+    {
+      "type": "chapter",
+      "show_ms": 0,
+      "hide_ms": 3400,
+      "title": "Judgment",
+      "subtitle": "The call the model makes when the note is thin",
+      "chapter_number": 2,
+      "accent": "#F59E0B",
+      "speakerColor": "#F59E0B"
+    },
+    {
+      "type": "chapter",
+      "show_ms": 3400,
+      "hide_ms": 6800,
+      "title": "Retrieval",
+      "subtitle": "Which passages actually land in the prompt",
+      "chapter_number": 3,
+      "accent": "#10B981",
+      "speakerColor": "#10B981"
+    },
+    {
+      "type": "stat",
+      "show_ms": 6800,
+      "hide_ms": 10800,
+      "label": "Accuracy",
+      "value": "from 16% to 99%",
+      "subtext": "held-out set",
+      "count_up": false,
+      "static": true,
+      "land_ms": 9600,
+      "speakerColor": "#10B981"
+    },
+    {
+      "type": "stat",
+      "show_ms": 10800,
+      "hide_ms": 14800,
+      "label": "Throughput",
+      "value": "3x",
+      "count_up": false,
+      "static": true,
+      "land_ms": 11200,
+      "speakerColor": "#F59E0B"
+    },
+    {
+      "type": "diagram",
+      "kind": "flow",
+      "show_ms": 14800,
+      "hide_ms": 21000,
+      "title": "Budget flow",
+      "speakerColor": "#F59E0B",
+      "nodes": [
+        {"label": "Collect", "detail": "Pull the request"},
+        {"label": "Judge", "detail": "Decide what to spend"},
+        {"label": "Retrieve", "detail": "Only the lines that matter"},
+        {"label": "Commit", "detail": "Book the final amount"}
+      ]
+    },
+    {
+      "type": "diagram",
+      "kind": "pillars",
+      "show_ms": 21000,
+      "hide_ms": 29000,
+      "title": "Key Takeaways",
+      "speakerColor": "#10B981",
+      "nodes": [
+        {
+          "label": "Match the model's judgment to the decision the retrieval set can actually support when the note in front of it is thin",
+          "detail": ""
+        },
+        {
+          "label": "Snap a from-to change to the final number",
+          "detail": "The hero shows 99% the whole time, never a midpoint like 61%"
+        },
+        {
+          "label": "Say the multiplier with the times sign",
+          "detail": "3×, not a bare 3"
+        }
+      ]
+    }
+  ]
+}

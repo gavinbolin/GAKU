@@ -42,10 +42,47 @@ export const QUALIFIER_RE =
 export const LEADING_QUALIFIER_RE =
   /^\s*(up to|about|around|nearly|over|more than|less than|fewer than|almost|roughly|approximately|at least|at most|as much as|as many as|as high as|as low as|under|above|below|close to|upwards of|~|≈)\s*/i;
 
-/** True when the value must never count up (range, limit, approximation, multi-number). */
+/**
+ * From-X%-to-Y% change ("from 16% to 99%", "16% → 99%").
+ * Returns the final value ("99%"). Ranges like "5 to 10%" (no unit on the
+ * first number, no arrow) return null and stay the full static string.
+ * A count-up must never show 61% while the line already says 99%.
+ */
+export const transitionFinal = (raw: string): string | null => {
+  const t = (raw || "").trim();
+  if (!t) return null;
+  const m =
+    /(\d[\d,]*(?:\.\d+)?)(\s*(?:%|percent))?\s*(?:→|->|to)\s*(\d[\d,]*(?:\.\d+)?)(\s*(?:%|percent|×|x))?/i.exec(
+      t,
+    );
+  if (!m) return null;
+  const unitFirst = Boolean(m[2]);
+  const arrow = /→|->/.test(m[0]);
+  if (!unitFirst && !arrow) return null;
+  const unitRaw = (m[4] || m[2] || "").replace(/\s/g, "").toLowerCase();
+  const unit =
+    unitRaw === "percent" || unitRaw === "%" ? "%" : unitRaw === "x" || unitRaw === "×" ? "×" : "";
+  return `${m[3]}${unit}`;
+};
+
+/** '3x' / '3 times' / '3×' → '3×'. Null when it is not a multiplier. */
+export const asMultiplier = (raw: string): string | null => {
+  const m = /^\s*(\d[\d,]*(?:\.\d+)?)\s*(?:x|×|times)\s*$/i.exec((raw || "").trim());
+  if (!m) return null;
+  return `${m[1]}×`;
+};
+
+/** The string Remotion actually draws. Matches the overlay JSON. */
+export const canonicalStatValue = (raw: string): string => {
+  const t = (raw || "").trim();
+  return transitionFinal(t) || asMultiplier(t) || t;
+};
+
+/** True when the value must never count up (range, limit, approximation, transition, multi-number). */
 export const isStaticStat = (raw: string): boolean => {
   const v = (raw || "").trim();
   if (!v) return true;
+  if (transitionFinal(v)) return true;
   if (RANGE_RE.test(v) || QUALIFIER_RE.test(v)) return true;
   return (v.match(/\d[\d,]*(?:\.\d+)?/g) || []).length !== 1;
 };
@@ -104,11 +141,11 @@ const formatNumeric = (n: number, parsed: ParsedNumeric): string => {
 
 /** Count-up at an explicit 0..1 time fraction (used by StatHero). */
 export const countUpAt = (value: string, t01: number): string => {
-  const trimmed = value.trim();
-  if (!isSimpleSingleNumber(trimmed)) return trimmed;
-  const parsed = parseNumeric(trimmed)!;
+  const canon = canonicalStatValue(value);
+  if (transitionFinal(value) || !isSimpleSingleNumber(canon)) return canon;
+  const parsed = parseNumeric(canon)!;
   const t = Math.max(0, Math.min(1, t01));
-  if (t >= 1) return trimmed;
+  if (t >= 1) return canon;
   const eased = 1 - Math.pow(1 - t, 3);
   return `${parsed.prefix}${formatNumeric(parsed.num * eased, parsed)}${parsed.suffix}`;
 };
@@ -119,9 +156,9 @@ export const countUpAt = (value: string, t01: number): string => {
  * the trimmed original via isSimpleSingleNumber.
  */
 export const countUpDisplay = (value: string, progress: number, localMs?: number): string => {
-  const trimmed = value.trim();
-  if (!isSimpleSingleNumber(trimmed)) return trimmed;
-  const parsed = parseNumeric(trimmed)!;
+  const canon = canonicalStatValue(value);
+  if (transitionFinal(value) || !isSimpleSingleNumber(canon)) return canon;
+  const parsed = parseNumeric(canon)!;
   // 2026-09-28 item 1: time-based (<= 900 ms) when the caller knows local ms,
   // so a long overlay window can't stretch the count past the spoken value.
   const t =
@@ -131,7 +168,7 @@ export const countUpDisplay = (value: string, progress: number, localMs?: number
           extrapolateLeft: "clamp",
           extrapolateRight: "clamp",
         });
-  if (t >= 1) return trimmed;
+  if (t >= 1) return canon;
   return `${parsed.prefix}${formatNumeric(parsed.num * t, parsed)}${parsed.suffix}`;
 };
 
@@ -158,9 +195,8 @@ export const StatOverlay: React.FC<StatOverlayProps> = ({
   });
 
   // Gavin 2026-09-24: simple single numbers count up; ranges/multi stay static.
-  const displayValue = isSimpleSingleNumber(value)
-    ? countUpDisplay(value, progress, localMs)
-    : value.trim();
+  // Transitions snap to the final value (never a midpoint). Multipliers draw ×.
+  const displayValue = countUpDisplay(value, progress, localMs);
 
   return (
     <div
