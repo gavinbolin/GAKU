@@ -615,6 +615,12 @@ def test_explain_and_recap_get_a_graphic_without_a_seat():  # item 9
     assert takeaways and takeaways["kind"] == "pillars" and "…" not in json.dumps(takeaways, ensure_ascii=False)
 
 
+def test_pillars_header_color_consistent():  # follow-up: one header color per card
+    src = (HERE / "packages/remotion/src/components/overlays/DiagramOverlay.tsx").read_text(encoding="utf-8")
+    assert "nodes.some((x) => x.detail) ? speakerColor : TEXT" in src
+    assert "color: nd.detail ? speakerColor : TEXT" not in src
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

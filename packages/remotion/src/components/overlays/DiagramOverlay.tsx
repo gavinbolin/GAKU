@@ -306,7 +306,7 @@ const Pillars: React.FC<DiagramOverlayProps> = ({ nodes = [], localMs, durationM
                 style={{
                   fontSize: labelPx,
                   fontWeight: 800,
-                  color: nd.detail ? speakerColor : TEXT,
+                  color: nodes.some((x) => x.detail) ? speakerColor : TEXT,
                   lineHeight: 1.25,
                   whiteSpace: "normal",
                   overflowWrap: "break-word",
