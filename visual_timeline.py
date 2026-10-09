@@ -47,6 +47,13 @@ STAT_MS = STAT_LEAD_MS + STAT_MAX_EARLY_MS + STAT_MIN_HOLD_MS + STAT_FADE_OUT_MS
 STAT_WITH_COMPANIONS_MS = STAT_MS + 1500
 QUADRANT_MS = 12000
 QUADRANT_HIGHLIGHT_MS = 8000
+# First time a 2x2 is introduced it has to stay up long enough to read all four cells.
+QUADRANT_INTRO_MIN_MS = 10000
+# Karaoke-only stretches (no card, overlay, or B-roll cut) cannot run longer than this.
+MAX_GRAPHICS_GAP_S = 18
+MAX_GRAPHICS_GAP_MS = MAX_GRAPHICS_GAP_S * 1000
+# A StatHero must still be on screen this long after the stat's last spoken word.
+STAT_END_PAD_MS = 450
 CHART_MS = 13000
 QUOTE_MS = 7000
 CARD_PAD_MS = 700
@@ -140,6 +147,39 @@ def _line_windows(seg: dict[str, Any], durations: dict[str, int], seg_start_abs:
         })
         cur += d + int(line.get("pause_after_ms") or 0)
     return out
+
+
+_STAT_TAIL_RE = re.compile(
+    r"^(?:%|percent|per|cent|million|billion|trillion|thousand|dollars?|usd|times)$",
+    re.I,
+)
+
+
+def _stat_spoken_end_ms(value: str, ln: dict[str, Any], seg_words: list[dict[str, Any]]) -> int | None:
+    """Absolute ms when the stat's last spoken word ends (number, then percent/scale)."""
+    start = _number_spoken_ms(value, ln, seg_words)
+    if start is None:
+        return None
+    words = sorted(
+        (w for w in seg_words if int(w.get("line_idx", -1)) == int(ln["idx"])),
+        key=lambda w: int(w.get("start_ms", 0)),
+    )
+    if not words:
+        return int(ln.get("end") or start)
+    idx = None
+    for i, w in enumerate(words):
+        if int(w.get("start_ms", 0)) >= start - 40 and re.search(r"\d", str(w.get("word") or "")):
+            idx = i
+            break
+    if idx is None:
+        return int(ln.get("end") or start)
+    end = int(words[idx].get("end_ms", start))
+    for w in words[idx + 1: idx + 4]:
+        bare = re.sub(r"[^\w%]", "", str(w.get("word") or ""))
+        if not bare or not _STAT_TAIL_RE.match(bare):
+            break
+        end = int(w.get("end_ms", end))
+    return end
 
 
 def _number_spoken_ms(value: str, ln: dict[str, Any], seg_words: list[dict[str, Any]]) -> int | None:
@@ -624,8 +664,9 @@ def pick_chapters(
                 t = d.get("title") or d.get("chapter_title")
                 if t:
                     planned.setdefault(si, {"title": str(t), "subtitle": str(d.get("subtitle") or ""), "source": v.get("template")})
-    # Chapters live mid-episode: skip the cold-open segment and the close.
-    mid = set(range(1, n - 1))
+    # Chapters live mid-episode: skip the cold open, the close, and any
+    # sign-off segment so its chip is not the previous Key Takeaways chapter.
+    mid = {si for si in range(1, n - 1) if not is_close_segment(segs[si], si, n)}
     chosen: dict[int, dict[str, Any]] = {si: p for si, p in planned.items() if si in mid}
     target = max(len(planned), int(round(total_ms / 60000 / 5)))
     target = min(target, len(mid))
@@ -809,7 +850,11 @@ def _card_duration(card: dict[str, Any]) -> int:
         return CHART_MS
     if t == "diagram":
         if card.get("kind") == "quadrant":
-            return QUADRANT_HIGHLIGHT_MS if (card.get("quadrant") or {}).get("highlight") is not None else QUADRANT_MS
+            if card.get("intro"):
+                return max(QUADRANT_MS, QUADRANT_INTRO_MIN_MS)
+            if (card.get("quadrant") or {}).get("highlight") is not None:
+                return QUADRANT_HIGHLIGHT_MS
+            return QUADRANT_MS
         if card.get("kind") in ("quote", "definition"):
             return QUOTE_MS
         n = len(card.get("nodes") or card.get("columns") or [])
@@ -1066,6 +1111,395 @@ def quadrant_card(q: dict[str, Any], *, title: str = "", highlight: int | None =
             "quadrant": {"x_axis": q["x_axis"], "y_axis": q["y_axis"], "cells": cells, "highlight": highlight}}
 
 
+def _highlight_index(q: dict[str, Any], raw: Any) -> int | None:
+    """Script `highlight` may be a cell label or an index. None = full matrix."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int) or (isinstance(raw, str) and str(raw).strip().isdigit()):
+        i = int(raw)
+        return i if 0 <= i < len(q.get("cells") or []) else None
+    needle = str(raw).strip().lower()
+    for i, c in enumerate(q.get("cells") or []):
+        label = str(c.get("label") or "").strip().lower()
+        if label and (label == needle or needle in label or label in needle):
+            return i
+    return None
+
+
+def script_quadrant_seats(
+    episode: dict[str, Any], seg_lines: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Every valid script `quadrant` overlay, in episode order.
+
+    detect_quadrant() returns on the first overlay, which is why a six-overlay
+    episode only ever drew one 2x2 (and the reviewer saw B-roll at the others).
+    """
+    seats: list[dict[str, Any]] = []
+    for si, seg in enumerate(episode.get("segments") or []):
+        lines = seg_lines[si] if si < len(seg_lines) else []
+        for oi, ov in enumerate(seg.get("overlays") or []):
+            if not isinstance(ov, dict) or ov.get("type") != "quadrant":
+                continue
+            q = normalize_quadrant(ov)
+            if not q:
+                continue
+            idx = max(0, min(len(lines) - 1, _ov_line_idx(ov, "show_at_line", lines, 0))) if lines else 0
+            hl = _highlight_index(q, ov.get("highlight"))
+            seats.append({
+                **q,
+                "seg_idx": si,
+                "ov_idx": oi,
+                "line_idx": idx,
+                "highlight": hl,
+                "title": str(ov.get("title") or ""),
+                "source": "script",
+            })
+    intro_i = 0
+    for i, sq in enumerate(seats):
+        if sq["highlight"] is None:
+            intro_i = i
+            break
+    for i, sq in enumerate(seats):
+        sq["intro"] = i == intro_i
+    return seats
+
+
+def is_close_segment(seg: dict[str, Any], si: int, n_segs: int) -> bool:
+    """The sign-off segment (sNN_close), not the Key Takeaways recap before it."""
+    sid = str(seg.get("segment_id") or "")
+    kind = str(seg.get("kind") or "")
+    blob = f"{sid} {kind} {seg.get('title') or ''}"
+    if kind.lower() == "close" or re.search(r"(^|_)close$", sid, re.I) or re.search(r"\bclose_cta\b", sid, re.I):
+        return True
+    if si == n_segs - 1 and re.search(r"\b(close|sign-?off)\b", blob, re.I) and not _RECAP_SEG_RE.search(blob):
+        return True
+    return False
+
+
+def _cta_line(text: str) -> str:
+    m = re.search(r"(stop piloting and start leading[.!]?)", text or "", re.I)
+    if m:
+        s = m.group(1).strip()
+        return s[0].upper() + s[1:]
+    sentence = _sentences(text or "")
+    raw = sentence[-1] if sentence else (text or "")
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if len(raw) <= 90:
+        return raw
+    return raw[:87].rsplit(" ", 1)[0]
+
+
+def close_cta_card(seg: dict[str, Any], lines: list[dict[str, Any]], ov: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A short landing line plus a light CTA. Never titled Key Takeaways."""
+    title = re.sub(r"\s+", " ", str(seg.get("title") or "Close")).strip()
+    if KEY_TAKEAWAYS_RE.search(title):
+        title = "Stop Piloting, Start Leading"
+    items = [str(x).strip() for x in ((ov or {}).get("items") or []) if str(x).strip()]
+    landing = items[0] if items else "Find where you actually sit"
+    spoken = _cta_line(lines[-1]["text"] if lines else "Stop piloting and start leading.")
+    card_items = [landing]
+    if spoken and spoken.lower() not in landing.lower():
+        card_items.append(spoken)
+    elif len(items) > 1:
+        card_items.append(items[-1])
+    return {
+        "type": "bullets",
+        "role": "close_cta",
+        "title": _truncate(title, 70) if len(title) > 70 else title,
+        "items": card_items[:3],
+        "min_dur": 8000,
+        "hold_to_end": True,
+    }
+
+
+def _force_into_window(
+    card: dict[str, Any], cs: int, ce: int, placed: list[dict[str, Any]], color: str,
+) -> dict[str, Any] | None:
+    """Seat a card that placement dropped, clearing non-stat overlaps."""
+    dur = int(card.get("min_dur") or card.get("dur") or _card_duration(card))
+    dur = min(dur, max(5000, ce - cs - 400))
+    anchor = int(card.get("desired") or cs)
+    end = min(ce - 300, max(anchor, cs) + dur)
+    start = max(cs + 100, end - dur)
+    if end - start < 5000:
+        return None
+    kept = []
+    for p in placed:
+        if p.get("type") in ("stat", "chapter"):
+            if p["start"] < end and start < p["end"]:
+                start = p["end"] + CARD_PAD_MS
+                end = min(ce - 300, start + dur)
+            kept.append(p)
+            continue
+        if p["end"] <= start or p["start"] >= end:
+            kept.append(p)
+    if end - start < 5000:
+        return None
+    placed[:] = kept
+    seated = {**card, "start": start, "end": end, "speakerColor": card.get("speakerColor") or color}
+    placed.append(seated)
+    return seated
+
+
+def longest_graphics_gap_ms(beats: list[dict[str, Any]], duration_ms: int) -> int:
+    """Longest stretch with no card and no B-roll cut, inside one segment."""
+    cur = 0
+    longest = 0
+    for b in sorted(beats, key=lambda x: int(x.get("show_ms") or 0)):
+        if b.get("type") not in ("chapter", "stat", "diagram", "bullets", "chart", "broll"):
+            continue
+        show = int(b.get("show_ms") or 0)
+        hide = int(b.get("hide_ms") or show)
+        longest = max(longest, show - cur)
+        cur = max(cur, hide)
+    return max(longest, int(duration_ms) - cur)
+
+
+def _gap_fill_card(lines: list[dict[str, Any]], start: int, end: int, color: str) -> dict[str, Any]:
+    ln = None
+    for candidate in lines:
+        if candidate["start"] < end and candidate["end"] > start:
+            ln = candidate
+            break
+    if ln is None and lines:
+        ln = lines[min(len(lines) - 1, len(lines) // 2)]
+    text = _sentences((ln or {}).get("text") or "")
+    sentence = text[0] if text else "The point of this stretch"
+    sentence = re.sub(r"\s+", " ", sentence).strip()
+    if len(sentence) > 110:
+        sentence = sentence[:107].rsplit(" ", 1)[0]
+    title = " ".join(sentence.split()[:6]) or "On this point"
+    return {
+        "type": "bullets",
+        "role": "gap_fill",
+        "title": title,
+        "items": [sentence],
+        "start": start,
+        "end": end,
+        "speakerColor": color,
+    }
+
+
+def _window_words(seg_words: list[dict[str, Any]], start: int, end: int) -> str:
+    return " ".join(
+        str(w.get("word") or "")
+        for w in seg_words
+        if start - 400 <= int(w.get("start_ms", 0)) < end
+    )
+
+
+def fill_graphics_gaps(
+    placed: list[dict[str, Any]],
+    cs: int,
+    ce: int,
+    lines: list[dict[str, Any]],
+    color: str,
+    *,
+    seg_words: list[dict[str, Any]] | None = None,
+    seg_text: str = "",
+    picker: Any = None,
+) -> int:
+    """Insert a card or a B-roll cut anywhere karaoke would run longer than MAX_GRAPHICS_GAP_MS.
+
+    Returns how many fills were added. A photo-less B-roll beat would not
+    change the picture, so when the picker has no still the fill is a card.
+    """
+    added = 0
+    guard = 0
+    while guard < 80:
+        guard += 1
+        spans = sorted((int(p["start"]), int(p["end"])) for p in placed)
+        cur = cs
+        hole: tuple[int, int] | None = None
+        for a, b in spans:
+            if a - cur > MAX_GRAPHICS_GAP_MS:
+                hole = (cur, a)
+                break
+            cur = max(cur, b)
+        if hole is None and ce - cur > MAX_GRAPHICS_GAP_MS:
+            hole = (cur, ce)
+        if hole is None:
+            break
+        g0, g1 = hole
+        dur = 7000
+        start = g0 + MAX_GRAPHICS_GAP_MS - dur
+        if start < g0 + 150:
+            start = g0 + 150
+        end = min(g1 - 100, start + dur)
+        if end - start < 4000:
+            start = g0 + 150
+            end = min(g1 - 100, start + dur)
+        if end - start < 3000:
+            break
+        photo = None
+        wtext = _window_words(seg_words or [], start, end) or seg_text
+        if picker is not None and wtext.strip():
+            _case, named = bq.named_case_queries(wtext)
+            qs = list(named) + bq.local_query_candidates(wtext, wtext, limit=4)
+            photo = picker.pick(qs, context_text=wtext, role="broll")
+        if photo and photo.get("url"):
+            placed.append({
+                "type": "broll",
+                "start": int(start),
+                "end": int(end),
+                "photo_url": photo["url"],
+                "query": photo.get("query") or "",
+                "photo_id": photo.get("id"),
+                "role": "gap_fill",
+            })
+        else:
+            placed.append(_gap_fill_card(lines, int(start), int(end), color))
+        added += 1
+    return added
+
+
+def sync_stat_inventory(
+    episode: dict[str, Any],
+    stats: list[dict[str, Any]],
+    per_segment: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Planned heroes that rendered are present in the overlay inventory.
+
+    A StatCallout visual (17000, $304M when it only lived on a visual) is not
+    "missing" once a StatHero beat exists. range_static values are written
+    back in full ("More than 30%", not "30%").
+    """
+    rendered: list[dict[str, Any]] = []
+    rendered_sigs: set[str] = set()
+    for si, seg_plan in enumerate(per_segment):
+        for b in seg_plan.get("beats") or []:
+            if b.get("type") != "stat":
+                continue
+            sig = stat_signature(str(b.get("value") or ""))
+            rendered_sigs.add(sig)
+            rendered.append({
+                "segment": si + 1,
+                "value": b.get("value"),
+                "label": b.get("label") or "",
+                "signature": sig,
+                "show_ms": b.get("show_ms"),
+                "hide_ms": b.get("hide_ms"),
+                "spoken_end_ms": b.get("spoken_end_ms"),
+            })
+    missing: list[dict[str, Any]] = []
+    for st in stats:
+        sig = st["signature"]
+        if sig in rendered_sigs:
+            continue
+        missing.append({
+            "segment": st["seg_idx"] + 1,
+            "value": st["value"],
+            "label": st["label"],
+            "source": st["source"],
+        })
+    for st in stats:
+        if st["signature"] not in rendered_sigs:
+            continue
+        seg = (episode.get("segments") or [])[st["seg_idx"]]
+        overlays = seg.setdefault("overlays", [])
+        matched = False
+        for ov in overlays:
+            if not isinstance(ov, dict) or ov.get("type") != "stat":
+                continue
+            if stat_signature(str(ov.get("value") or "")) != st["signature"]:
+                continue
+            ov["value"] = st["value"]
+            if st.get("label") and not ov.get("label"):
+                ov["label"] = st["label"]
+            matched = True
+        if matched:
+            continue
+        lines = seg.get("lines") or []
+        show = int(st.get("line_idx") or 0) + 1
+        overlays.append({
+            "type": "stat",
+            "label": st.get("label") or "",
+            "value": st["value"],
+            "subtext": st.get("subtext") or "",
+            "show_at_line": show,
+            "hide_at_line": min(len(lines) or show, show + 2),
+            "source": "rendered_hero",
+        })
+    return {"rendered": rendered, "missing": missing}
+
+
+def _seal_segment_holds(
+    placed: list[dict[str, Any]],
+    cards: list[dict[str, Any]],
+    cs: int,
+    ce: int,
+    seg: dict[str, Any],
+    si: int,
+    n_segs: int,
+    color: str,
+) -> None:
+    """Force a dropped 2x2 or close CTA, then keep each StatHero through speech.
+
+    Quadrants are pushed rather than deleted. A close CTA holds to the end of
+    the card window so the sign-off is not left on Key Takeaways chrome.
+    """
+    def _quad_key(card: dict[str, Any]) -> tuple[Any, Any]:
+        return (card.get("title"), (card.get("quadrant") or {}).get("highlight"))
+
+    seated = {_quad_key(p) for p in placed if p.get("kind") == "quadrant"}
+    for card in cards:
+        if card.get("kind") != "quadrant" or _quad_key(card) in seated:
+            continue
+        if _force_into_window(card, cs, ce, placed, color):
+            seated.add(_quad_key(card))
+    if is_close_segment(seg, si, n_segs) and not any(p.get("role") == "close_cta" for p in placed):
+        for card in cards:
+            if card.get("role") == "close_cta":
+                _force_into_window(card, cs, ce, placed, color)
+                break
+    for p in list(placed):
+        if p.get("role") != "close_cta" or not p.get("hold_to_end"):
+            continue
+        end = ce - 200
+        for o in placed:
+            if o is not p and o.get("type") == "stat" and o["start"] >= p["start"]:
+                end = min(end, o["start"] - CARD_PAD_MS)
+        if end > p["end"]:
+            p["end"] = end
+        placed[:] = [
+            o for o in placed
+            if o is p or o.get("type") in ("stat", "chapter") or o.get("kind") == "quadrant"
+            or o["end"] <= p["start"] + 50 or o["start"] >= p["end"] - 50
+        ]
+        break
+    for p in sorted((x for x in placed if x.get("type") == "stat"), key=lambda x: int(x["start"])):
+        spoken = p.get("spoken_end_abs")
+        if spoken is None:
+            continue
+        floor = min(ce - 200, int(spoken))
+        need = min(ce - 200, int(spoken) + STAT_END_PAD_MS)
+        need = max(need, floor)
+        blockers = [
+            o["start"] for o in placed
+            if o is not p and o.get("type") in ("stat", "chapter") and o["start"] > p["start"]
+        ]
+        if blockers:
+            need = min(need, min(blockers) - CARD_PAD_MS)
+        if need <= p["end"]:
+            continue
+        for o in list(placed):
+            if o is p or o.get("type") in ("stat", "chapter"):
+                continue
+            if not (o["start"] < need and p["start"] < o["end"]):
+                continue
+            o["start"] = need + CARD_PAD_MS
+            min_keep = 8000 if o.get("kind") == "quadrant" else 2500
+            if o.get("kind") == "quadrant" and o.get("intro"):
+                min_keep = QUADRANT_INTRO_MIN_MS
+            if o["end"] - o["start"] < min_keep:
+                o["end"] = min(ce - 200, o["start"] + min_keep)
+            if o["end"] - o["start"] < 2500 or o["start"] >= ce - 400:
+                placed.remove(o)
+        p["end"] = max(p["end"], min(need, ce - 200))
+
+
 # ---------------------------------------------------------------------------
 # judgment / RAG sections and the recap always get one strong graphic
 # ---------------------------------------------------------------------------
@@ -1147,10 +1581,12 @@ def _place(card: dict[str, Any], lo: int, hi: int, busy: list[tuple[int, int]]) 
             if not _overlaps(t, t + dur, busy, CARD_PAD_MS):
                 return t, t + dur
     if card["type"] in ("diagram", "bullets", "chart") and dur > 7000:
-        # Key Takeaways never shrink below ~8s. Other cards may retry at 7s.
+        # Key Takeaways never shrink below ~8s. A quadrant intro never shrinks
+        # below QUADRANT_INTRO_MIN_MS. Other cards may retry at 7s.
         floor = 8000 if (
             card["type"] == "diagram" and KEY_TAKEAWAYS_RE.search(str(card.get("title") or ""))
         ) else 7000
+        floor = max(floor, int(card.get("min_dur") or 0))
         if dur > floor:
             return _place({**card, "dur": floor}, lo, hi, busy)
         return None
@@ -1183,19 +1619,44 @@ def plan_episode(
     clean_title: Callable[[str], str],
     complete_items: Callable[[str, list[str]], list[str]],
     gemini_query: Callable[[str, str], list[str]] | None = None,
+    factcheck: dict[str, Any] | None = None,
     log: Callable[[str], None] = lambda m: print(m, file=sys.stderr),
 ) -> dict[str, Any]:
     segs = episode.get("segments") or []
     topic = str(episode.get("topic") or "")
+    if factcheck and (factcheck.get("issues") or []):
+        try:
+            from factcheck_episode import sync_cards_to_factcheck
+            n_cards = sync_cards_to_factcheck(episode, list(factcheck.get("issues") or []))
+            if n_cards:
+                log(f"[plan] factcheck card copy updated on {n_cards} fields")
+        except Exception as exc:  # never fatal
+            log(f"[plan] factcheck card sync failed: {exc!r}")
     seg_lines = [_line_windows(seg, durations, int(t["start_ms"])) for seg, t in zip(segs, seg_timings)]
     seg_durs = [int(t["duration_ms"]) for t in seg_timings]
     stats = collect_stats(episode, seg_lines)
     chapters = pick_chapters(episode, seg_lines, seg_durs, total_ms, stats, clean_title)
+    script_quads: list[dict[str, Any]] = []
     try:
-        quad = detect_quadrant(episode, seg_lines)
+        script_quads = script_quadrant_seats(episode, seg_lines)
     except Exception as exc:  # never fatal
-        log(f"[plan] quadrant detection failed: {exc!r}")
-        quad = None
+        log(f"[plan] script quadrants failed: {exc!r}")
+        script_quads = []
+    quad = None
+    if script_quads:
+        intro_sq = next(sq for sq in script_quads if sq.get("intro"))
+        quad = {
+            "x_axis": intro_sq["x_axis"], "y_axis": intro_sq["y_axis"], "cells": intro_sq["cells"],
+            "source": "script", "intro": (intro_sq["seg_idx"], intro_sq["line_idx"]),
+            "positions": {}, "presence": {}, "consumed": set(),
+            "title": intro_sq.get("title") or "",
+        }
+    else:
+        try:
+            quad = detect_quadrant(episode, seg_lines)
+        except Exception as exc:  # never fatal
+            log(f"[plan] quadrant detection failed: {exc!r}")
+            quad = None
 
     words_by_seg: dict[int, list[dict[str, Any]]] = {}
     for w in word_timings:
@@ -1211,10 +1672,15 @@ def plan_episode(
         report["quadrant"] = {"source": quad["source"], "x_axis": quad["x_axis"]["label"],
                               "y_axis": quad["y_axis"]["label"],
                               "cells": [{"label": c["label"], "x": c["x"], "y": c["y"]} for c in quad["cells"]],
-                              "intro_segment": quad["intro"][0] + 1}
-        log(f"[plan] 2x2 quadrant: {quad['x_axis']['label']} x {quad['y_axis']['label']} -> "
+                              "intro_segment": quad["intro"][0] + 1,
+                              "count": len(script_quads) or 1,
+                              "seats": [{"segment": s["seg_idx"] + 1, "line": s["line_idx"] + 1,
+                                         "intro": bool(s.get("intro")), "highlight": s.get("highlight"),
+                                         "title": s.get("title") or ""} for s in script_quads]}
+        log(f"[plan] 2x2 quadrant x{len(script_quads) or 1}: {quad['x_axis']['label']} x {quad['y_axis']['label']} -> "
             + ", ".join(c["label"] for c in quad["cells"]) + f" ({quad['source']})")
     salt = 0
+    max_gap_ms = 0
 
     for si, seg in enumerate(segs):
         cs, ce = card_windows[si]
@@ -1236,17 +1702,39 @@ def plan_episode(
             land_abs = spoken_ms if spoken_ms is not None else ln["start"] + 400
             lead = 700 if st["is_range"] else STAT_LEAD_MS
             desired = max(cs, land_abs - lead)
+            spoken_end = _stat_spoken_end_ms(st["value"], ln, words_by_seg.get(si, [])) if lines else None
             cards.append({"type": "stat", "label": st["label"], "value": st["value"],
                           "subtext": st["subtext"], "companions": st["companions"],
                           "is_range": st["is_range"], "static": st["is_range"], "land_abs": land_abs,
+                          "spoken_end_abs": spoken_end,
                           "desired": desired, "prio": 1,
                           "max_shift": 16000, "max_early": STAT_MAX_EARLY_MS,
                           "speakerColor": _dominant_color(lines, ln["idx"], ln["idx"], color_a, color_b)})
-        # Item 2: 2x2 quadrant -- full matrix where the axes are explained.
-        if quad and quad["intro"][0] == si and lines:
+        # Every script quadrant overlay is its own 2x2. detect_quadrant() only
+        # returns the first, which is why the other five never drew a matrix.
+        if script_quads:
+            for sq in script_quads:
+                if sq["seg_idx"] != si or not lines:
+                    continue
+                il = max(0, min(len(lines) - 1, int(sq["line_idx"])))
+                hl = sq.get("highlight")
+                title = str(sq.get("title") or "")
+                if not title and hl is not None:
+                    title = sq["cells"][hl]["label"]
+                intro = bool(sq.get("intro"))
+                qc = quadrant_card(sq, title=title, highlight=hl)
+                cards.append({
+                    **qc, "intro": intro,
+                    "min_dur": QUADRANT_INTRO_MIN_MS if intro else QUADRANT_HIGHLIGHT_MS,
+                    "desired": lines[il]["start"], "prio": 2, "max_shift": 30000,
+                    "max_early": 20000 if intro else 8000,
+                    "speakerColor": _dominant_color(lines, il, il, color_a, color_b),
+                })
+        elif quad and quad["intro"][0] == si and lines:
             il = max(0, min(len(lines) - 1, quad["intro"][1]))
-            cards.append({**quadrant_card(quad), "desired": lines[il]["start"], "prio": 2, "max_shift": 30000,
-                          "max_early": 6000, "speakerColor": _dominant_color(lines, il, il, color_a, color_b)})
+            cards.append({**quadrant_card(quad), "intro": True, "min_dur": QUADRANT_INTRO_MIN_MS,
+                          "desired": lines[il]["start"], "prio": 2, "max_shift": 30000,
+                          "max_early": 20000, "speakerColor": _dominant_color(lines, il, il, color_a, color_b)})
         for oi, ov in enumerate(seg.get("overlays") or []):
             if not isinstance(ov, dict) or ov.get("type") not in ("bullets", "chart"):
                 continue
@@ -1283,6 +1771,11 @@ def plan_episode(
                 continue
             title = str(ov.get("title") or "")
             items = complete_items(title, [str(x) for x in (ov.get("items") or []) if x])
+            if is_close_segment(seg, si, len(segs)):
+                cta = close_cta_card(seg, lines, ov)
+                cards.append({**cta, "desired": lines[-1]["start"] if lines else desired, "prio": 2,
+                              "max_early": 12000, "max_shift": 8000, "speakerColor": color})
+                continue
             dia = bullets_to_diagram(title, items, used_kinds)
             if dia:
                 used_kinds.add(dia["kind"])
@@ -1309,6 +1802,11 @@ def plan_episode(
             card.update({"desired": lines[idx]["start"] if lines else cs, "prio": 2,
                          "speakerColor": _dominant_color(lines, idx, idx, color_a, color_b)})
             cards.append(card)
+
+        if is_close_segment(seg, si, len(segs)) and not any(c.get("role") == "close_cta" for c in cards) and lines:
+            cta = close_cta_card(seg, lines, None)
+            cards.append({**cta, "desired": lines[-1]["start"], "prio": 2, "max_early": 12000,
+                          "max_shift": 8000, "speakerColor": color_a})
 
         if not _has_strong_graphic(cards):
             why = needs_strong_graphic(seg, lines)
@@ -1389,6 +1887,9 @@ def plan_episode(
                 log(f"[plan] forced Remotion diagram in segment {si + 1} ({promised.get('kind')})")
                 break
 
+        _seal_segment_holds(placed, cards, cs, ce, seg, si, len(segs), color_a)
+        busy = [(int(p["start"]), int(p["end"])) for p in placed if p.get("type") != "broll"]
+
         # --- B-roll cuts in the gaps (item 2) ---
         seg_words = words_by_seg.get(si, [])
         gaps = _gaps(cs, ce - 300, busy)
@@ -1453,7 +1954,9 @@ def plan_episode(
             slot_blob = f"{wtext} {' '.join(queries[:4])}"
             # Diagram-shaped windows reject whiteboard / PROMOTION-GROWTH slides.
             role = "diagram" if _DIAGRAM_SLOT_RE.search(slot_blob) else "broll"
-            photo = picker.pick(queries, context_text=f"{wtext} {ctx}", role=role) if picker else None
+            # Reject on the window text only. Segment context ("supply chain"
+            # elsewhere) must not keep a port photo under a flavor beat.
+            photo = picker.pick(queries, context_text=wtext, role=role) if picker else None
             entry = {"start": b0, "end": b1, "queries": queries[:4], "gemini": gem[:3], "named_case": case_name,
                      "photo_url": (photo or {}).get("url") or "", "photo_id": (photo or {}).get("id"),
                      "query": (photo or {}).get("query") or (queries[0] if queries else ""),
@@ -1464,6 +1967,11 @@ def plan_episode(
             if entry["photo_url"]:
                 placed.append({"type": "broll", "start": b0, "end": b1, "photo_url": entry["photo_url"],
                                "query": entry["query"], "photo_id": entry["photo_id"]})
+
+        fill_graphics_gaps(
+            placed, cs, ce, lines, color_a,
+            seg_words=seg_words, seg_text=seg_text, picker=picker,
+        )
 
         # --- rotating backdrops, never reused (item 8) ---
         n_bd = int(_clamp(math.ceil((ce - cs) / BACKDROP_EVERY_MS), 1, 5))
@@ -1477,7 +1985,7 @@ def plan_episode(
             bd_case, bd_named = bq.named_case_queries(btext, "")
             if bd_named:
                 qs = [q for q in bd_named if q not in qs][:2] + qs
-            photo = picker.pick(qs, context_text=f"{btext} {seg_text}", role="backdrop") if picker else None
+            photo = picker.pick(qs, context_text=btext, role="backdrop") if picker else None
             if photo:
                 backdrops.append({"start": b0, "end": b1, "photo_url": photo["url"], "query": photo["query"], "photo_id": photo["id"]})
                 report["backdrops"].append({"segment": si + 1, "query": photo["query"], "photo_id": photo["id"]})
@@ -1485,13 +1993,18 @@ def plan_episode(
         # --- rebase to card-relative ms ---
         beats = []
         for p in sorted(placed, key=lambda c: c["start"]):
-            b = {k2: v2 for k2, v2 in p.items() if k2 not in ("start", "end", "desired", "prio", "dur", "max_shift", "max_early", "land_abs")}
+            b = {k2: v2 for k2, v2 in p.items() if k2 not in (
+                "start", "end", "desired", "prio", "dur", "max_shift", "max_early",
+                "land_abs", "spoken_end_abs", "min_dur", "hold_to_end",
+            )}
             b["show_ms"] = int(p["start"] - cs)
             b["hide_ms"] = int(p["end"] - cs)
             if b["type"] == "stat":
                 # Card-relative ms of the spoken number: StatHero finishes any
                 # count-up by then (snaps if the card started too late).
                 b["land_ms"] = int(p.get("land_abs", p["start"]) - cs)
+                if p.get("spoken_end_abs") is not None:
+                    b["spoken_end_ms"] = int(p["spoken_end_abs"] - cs)
                 b["count_up"] = (not b.get("static")) and (b["land_ms"] - b["show_ms"]) >= 570
                 report.setdefault("stat_holds", []).append({
                     "segment": si + 1, "value": b.get("value"), "static": bool(b.get("static")),
@@ -1508,6 +2021,9 @@ def plan_episode(
             longest_static = max(longest_static, b["show_ms"] - cur)
             cur = max(cur, b["hide_ms"])
         longest_static = max(longest_static, (ce - cs) - cur)
+        gap_ms = longest_graphics_gap_ms(beats, ce - cs)
+        max_gap_ms = max(max_gap_ms, gap_ms)
+        longest_static = gap_ms
         content_cards = [p for p in sorted(placed, key=lambda c: c["start"]) if p.get("type") != "broll"]
         prev_edge_value = (
             str(content_cards[-1].get("value") or "")
@@ -1543,7 +2059,11 @@ def plan_episode(
         "quadrants": sum(1 for s in per_segment for b in s["beats"] if b.get("kind") == "quadrant"),
         "named_case_broll": sum(1 for b in report["broll"] if b.get("named_case")),
         "stat_min_hold_ms": min([h["hold_after_land_ms"] for h in report.get("stat_holds", [])] or [0]),
+        "max_graphics_gap_s": round(max_gap_ms / 1000, 1),
+        "close_cta": sum(1 for s in per_segment for b in s["beats"] if b.get("role") == "close_cta"),
     }
+    report["stat_inventory"] = sync_stat_inventory(episode, stats, per_segment)
+    report["summary"]["stats_missing"] = len(report["stat_inventory"]["missing"])
     return {"segments": per_segment, "report": report}
 
 
@@ -1551,4 +2071,7 @@ __all__ = ["plan_episode", "collect_stats", "pick_chapters", "bullets_to_diagram
            "stat_is_static", "enrich_stat_value", "normalize_stat_display", "transition_final_value",
            "apply_multiplier_symbol", "is_bare_unitless", "dedupe_adjacent_stat_cards",
            "unique_chapter_subtitle", "needs_strong_graphic", "synthesize_strong_graphic",
-           "detect_quadrant", "normalize_quadrant", "stat_hold_ms"]
+           "detect_quadrant", "normalize_quadrant", "stat_hold_ms",
+           "script_quadrant_seats", "is_close_segment", "close_cta_card",
+           "fill_graphics_gaps", "sync_stat_inventory", "longest_graphics_gap_ms",
+           "MAX_GRAPHICS_GAP_S", "QUADRANT_INTRO_MIN_MS", "STAT_END_PAD_MS"]

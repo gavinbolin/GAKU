@@ -4,6 +4,7 @@ import {
   Img,
   interpolate,
   spring,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -113,6 +114,15 @@ export interface SegmentCardProps {
   beats?: BeatEntry[];
   backdrops?: BackdropEntry[];
 }
+
+/** https/data stay as-is. A fixture-relative path is served from public/. */
+const photoSrc = (url: string | undefined | null): string => {
+  const u = typeof url === "string" ? url.trim() : "";
+  if (!u) return "";
+  if (/^(https?:|data:|blob:)/i.test(u)) return u;
+  if (/^(file:|[a-zA-Z]:[\\/]|\\\\)/.test(u)) return u;
+  return staticFile(u.replace(/^\/+/, ""));
+};
 
 const TEXT = "#f5f0e8";
 const SENTENCE_FADE_FRAMES = 3;
@@ -1192,7 +1202,7 @@ const CenterGraphic: React.FC<CenterGraphicProps> = ({
       }}
     >
       <Img
-        src={active.photo_url}
+        src={photoSrc(active.photo_url)}
         style={{
           width: "100%",
           height: "100%",
@@ -1335,7 +1345,7 @@ const BackdropLayer: React.FC<{
         return (
           <AbsoluteFill key={i} style={{ opacity: op }}>
             <Img
-              src={b.photo_url}
+              src={photoSrc(b.photo_url)}
               style={{
                 width: "100%",
                 height: "100%",
@@ -1364,7 +1374,7 @@ const BrollCut: React.FC<{ beat: BeatEntry; currentMs: number; index: number }> 
   return (
     <AbsoluteFill style={{ opacity: beatOpacity(beat, currentMs) }}>
       <Img
-        src={beat.photo_url as string}
+        src={photoSrc(beat.photo_url)}
         style={{
           width: "100%",
           height: "100%",

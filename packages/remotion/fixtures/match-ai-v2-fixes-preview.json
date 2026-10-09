@@ -1,0 +1,155 @@
+{
+  "durationInFrames": 2700,
+  "title": "Stop Piloting, Start Leading",
+  "photo_url": "",
+  "host_a_name": "Alex",
+  "host_b_name": "Jordan",
+  "host_a_color": "#F59E0B",
+  "host_b_color": "#10B981",
+  "current_speaker": "A",
+  "segment_number": 10,
+  "sentence_timings": [
+    {
+      "speaker": "A",
+      "start_ms": 2000,
+      "end_ms": 12000,
+      "words": [
+        {"word": "Four", "speaker": "A", "start_ms": 2000, "end_ms": 2800},
+        {"word": "strategies", "speaker": "A", "start_ms": 2800, "end_ms": 4200},
+        {"word": "sit", "speaker": "A", "start_ms": 4200, "end_ms": 5000},
+        {"word": "on", "speaker": "A", "start_ms": 5000, "end_ms": 5600},
+        {"word": "two", "speaker": "A", "start_ms": 5600, "end_ms": 6400},
+        {"word": "axes.", "speaker": "A", "start_ms": 6400, "end_ms": 8000}
+      ]
+    },
+    {
+      "speaker": "B",
+      "start_ms": 33000,
+      "end_ms": 41000,
+      "words": [
+        {"word": "Focused", "speaker": "B", "start_ms": 33000, "end_ms": 34500},
+        {"word": "differentiation", "speaker": "B", "start_ms": 34500, "end_ms": 37000},
+        {"word": "stays", "speaker": "B", "start_ms": 37000, "end_ms": 38500},
+        {"word": "in", "speaker": "B", "start_ms": 38500, "end_ms": 39200},
+        {"word": "one", "speaker": "B", "start_ms": 39200, "end_ms": 40000},
+        {"word": "niche.", "speaker": "B", "start_ms": 40000, "end_ms": 41000}
+      ]
+    },
+    {
+      "speaker": "A",
+      "start_ms": 46000,
+      "end_ms": 54000,
+      "words": [
+        {"word": "Stop", "speaker": "A", "start_ms": 46000, "end_ms": 47500},
+        {"word": "piloting", "speaker": "A", "start_ms": 47500, "end_ms": 49500},
+        {"word": "and", "speaker": "A", "start_ms": 49500, "end_ms": 50500},
+        {"word": "start", "speaker": "A", "start_ms": 50500, "end_ms": 52000},
+        {"word": "leading.", "speaker": "A", "start_ms": 52000, "end_ms": 54000}
+      ]
+    },
+    {
+      "speaker": "B",
+      "start_ms": 60000,
+      "end_ms": 68000,
+      "words": [
+        {"word": "Apple", "speaker": "B", "start_ms": 60000, "end_ms": 61500},
+        {"word": "filed", "speaker": "B", "start_ms": 61500, "end_ms": 63000},
+        {"word": "metalens", "speaker": "B", "start_ms": 63000, "end_ms": 65000},
+        {"word": "patents.", "speaker": "B", "start_ms": 65000, "end_ms": 68000}
+      ]
+    },
+    {
+      "speaker": "A",
+      "start_ms": 74000,
+      "end_ms": 84000,
+      "words": [
+        {"word": "Novartis", "speaker": "A", "start_ms": 74000, "end_ms": 76000},
+        {"word": "cut", "speaker": "A", "start_ms": 76000, "end_ms": 77200},
+        {"word": "time", "speaker": "A", "start_ms": 77200, "end_ms": 78600},
+        {"word": "by", "speaker": "A", "start_ms": 78600, "end_ms": 79400},
+        {"word": "more", "speaker": "A", "start_ms": 79400, "end_ms": 80800},
+        {"word": "than", "speaker": "A", "start_ms": 80800, "end_ms": 81800},
+        {"word": "30", "speaker": "A", "start_ms": 81800, "end_ms": 82800},
+        {"word": "percent.", "speaker": "A", "start_ms": 82800, "end_ms": 84000}
+      ]
+    }
+  ],
+  "graphics": [],
+  "overlays": [],
+  "backdrops": [],
+  "beats": [
+    {
+      "type": "diagram",
+      "kind": "quadrant",
+      "intro": true,
+      "show_ms": 1500,
+      "hide_ms": 13500,
+      "title": "The Four AI Innovation Strategies",
+      "speakerColor": "#F59E0B",
+      "quadrant": {
+        "x_axis": {"label": "Value-Chain Control", "low": "Low", "high": "High"},
+        "y_axis": {"label": "Technological Breadth", "low": "Low", "high": "High"},
+        "cells": [
+          {"label": "Focused Differentiation", "detail": "Optimize defined domains", "x": 0, "y": 0},
+          {"label": "Vertical Integration", "detail": "Drive operational excellence", "x": 1, "y": 0},
+          {"label": "Collaborative Ecosystem", "detail": "Partner for discovery", "x": 0, "y": 1},
+          {"label": "Platform Leadership", "detail": "Shape standard environments", "x": 1, "y": 1}
+        ],
+        "highlight": null
+      }
+    },
+    {
+      "type": "broll",
+      "show_ms": 16000,
+      "hide_ms": 23000,
+      "photo_url": "match-ai-v2/broll.jpg",
+      "query": "spice blending laboratory",
+      "role": "context"
+    },
+    {
+      "type": "bullets",
+      "role": "gap_fill",
+      "show_ms": 32000,
+      "hide_ms": 41000,
+      "title": "Focused Differentiation",
+      "speakerColor": "#10B981",
+      "items": ["A deep niche the team can actually run"]
+    },
+    {
+      "type": "bullets",
+      "role": "close_cta",
+      "show_ms": 44000,
+      "hide_ms": 56000,
+      "title": "Stop Piloting, Start Leading",
+      "speakerColor": "#F59E0B",
+      "items": [
+        "Find where you actually sit",
+        "Stop piloting and start leading."
+      ]
+    },
+    {
+      "type": "bullets",
+      "show_ms": 58000,
+      "hide_ms": 70000,
+      "title": "A Tale of Two Systems",
+      "speakerColor": "#10B981",
+      "items": [
+        "GM: 40% lighter bracket stalled by stamped-steel supply chain",
+        "Apple metalenses: File dozens of patents within two years"
+      ]
+    },
+    {
+      "type": "stat",
+      "show_ms": 72000,
+      "hide_ms": 86000,
+      "label": "Novartis Trial Design Speedup",
+      "value": "More than 30%",
+      "subtext": "",
+      "static": true,
+      "count_up": false,
+      "land_ms": 74000,
+      "spoken_end_ms": 84000,
+      "speakerColor": "#F59E0B"
+    }
+  ]
+}

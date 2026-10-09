@@ -155,6 +155,182 @@ def gemini_factcheck(episode: dict[str, Any], source_text: str) -> dict[str, Any
     }
 
 
+# Status words a corrected claim must not leave on a card. "integrating" is not
+# "integrated" — the match is a whole word.
+_CARD_STATUS_RE = re.compile(r"\b(integrated|launched|launch|shipped|released)\b", re.I)
+_FACT_STOP = {
+    "that", "this", "with", "from", "into", "than", "then", "they", "their",
+    "within", "under", "just", "only", "same", "time", "also", "have", "been",
+    "were", "was", "are", "and", "the", "for", "its", "after", "before", "about",
+    "which", "while", "during", "over", "years", "year", "your", "when", "what",
+    "than", "into", "onto", "such", "them", "these", "those", "used", "using",
+}
+
+
+def _fact_words(text: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(w) >= 4 and w not in _FACT_STOP
+    }
+
+
+def _issue_anchors(issue: dict[str, Any]) -> set[str]:
+    """Subject words shared by the rejected claim and the corrected line."""
+    claim = _fact_words(str(issue.get("claim") or ""))
+    corrected = _fact_words(str(issue.get("corrected_text") or ""))
+    anchors: set[str] = set()
+    for a in claim:
+        for b in corrected:
+            if a == b or (
+                len(a) >= 6 and len(b) >= 6 and (a.startswith(b) or b.startswith(a))
+            ):
+                anchors.add(a)
+                anchors.add(b)
+    return anchors
+
+
+def _word_hits_anchors(word: str, anchors: set[str]) -> bool:
+    wl = word.lower()
+    for a in anchors:
+        if wl == a:
+            return True
+        if len(wl) >= 6 and len(a) >= 6 and (wl.startswith(a) or a.startswith(wl)):
+            return True
+    return False
+
+
+def _card_needs_rewrite(text: str, issue: dict[str, Any]) -> bool:
+    """True when this card still states the rejected claim, not the correction."""
+    corrected = str(issue.get("corrected_text") or "")
+    if not corrected.strip() or not text.strip():
+        return False
+    anchors = _issue_anchors(issue)
+    if not anchors:
+        return False
+    words = re.findall(r"[A-Za-z0-9]+", text)
+    hits = [w for w in words if _word_hits_anchors(w, anchors)]
+    families = {w.lower()[:6] for w in hits}
+    if len(families) < 2 and not any(len(w) >= 8 for w in hits):
+        return False
+    bad = [
+        m.group(0) for m in _CARD_STATUS_RE.finditer(text)
+        if not re.search(rf"\b{re.escape(m.group(0))}\b", corrected, re.I)
+    ]
+    new_words = [
+        w for w in (_fact_words(corrected) - _fact_words(str(issue.get("claim") or "")))
+        if len(w) >= 5
+    ]
+    has_new = any(
+        re.search(rf"\b{re.escape(w[:6])}\w*\b", text, re.I) for w in new_words
+    )
+    if bad:
+        return True
+    return bool(new_words) and not has_new
+
+
+def _factcheck_card_line(issue: dict[str, Any]) -> str:
+    """Short card line: subject from the claim, clause from the correction."""
+    corrected = re.sub(r"\s+", " ", str(issue.get("corrected_text") or "")).strip()
+    claim = str(issue.get("claim") or "")
+    anchors = _issue_anchors(issue)
+    found: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"[A-Za-z][A-Za-z0-9+-]{3,}", corrected):
+        w = m.group(0)
+        if w.lower() in seen or not _word_hits_anchors(w, anchors):
+            continue
+        seen.add(w.lower())
+        found.append(w)
+        if len(found) >= 2:
+            break
+    subject = " ".join(found) if found else "Correction"
+    if len(subject) > 40:
+        subject = subject[:40].rsplit(" ", 1)[0]
+    new_words = [w for w in (_fact_words(corrected) - _fact_words(claim)) if len(w) >= 5]
+    tokens = corrected.split()
+    last_i = 0
+    for i, tok in enumerate(tokens):
+        if any(re.search(re.escape(w), tok, re.I) for w in new_words):
+            last_i = i
+    end = min(len(tokens), last_i + 4)
+    start = last_i
+    while start > 0:
+        trial = " ".join(tokens[start - 1:end]).strip(" ,;.")
+        if len(trial) > 68:
+            break
+        start -= 1
+    clause = " ".join(tokens[start:end]) if tokens else corrected
+    clause = _CARD_STATUS_RE.sub("", clause)
+    clause = re.sub(r"\s+", " ", clause).strip(" ,;.")
+    if clause:
+        clause = clause[0].upper() + clause[1:]
+    if len(clause) > 68:
+        clause = clause[:68].rsplit(" ", 1)[0]
+    line = f"{subject}: {clause}" if clause else subject
+    return re.sub(r"\s+", " ", line).strip()
+
+
+_CARD_SKIP_KEYS = {
+    "type", "template", "visual_id", "segment_id", "line_id", "host_id",
+    "url", "photo_url", "page_url", "id", "source", "kind", "chart_type",
+    "x", "y", "low", "high",
+}
+
+
+def _map_card_strings(node: Any, rewrite) -> None:
+    if isinstance(node, dict):
+        for k, v in list(node.items()):
+            if k in _CARD_SKIP_KEYS:
+                continue
+            if isinstance(v, str):
+                node[k] = rewrite(v)
+            else:
+                _map_card_strings(v, rewrite)
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            if isinstance(v, str):
+                node[i] = rewrite(v)
+            else:
+                _map_card_strings(v, rewrite)
+
+
+def sync_cards_to_factcheck(episode: dict[str, Any], issues: list[dict[str, Any]]) -> int:
+    """Rewrite bullet / takeaway / chapter / stat card copy to the factcheck line.
+
+    Line text is rewritten separately. A card derived from the rejected claim
+    (Apple metalenses "integrated" / "launched") picks up the correction
+    ("patents") instead. Idempotent: a card that already uses the correction
+    is left alone. "Vertical Integration" does not match "integrated".
+    """
+    usable = [
+        i for i in issues
+        if isinstance(i, dict) and i.get("corrected_text") and (i.get("claim") or i.get("line_id"))
+    ]
+    if not usable:
+        return 0
+    changed = 0
+
+    def rewrite(text: str) -> str:
+        nonlocal changed
+        if not isinstance(text, str) or len(text.strip()) < 8:
+            return text
+        out = text
+        for issue in usable:
+            if not _card_needs_rewrite(out, issue):
+                continue
+            repl = _factcheck_card_line(issue)
+            if repl and repl != out and not _CARD_STATUS_RE.search(repl):
+                out = repl
+                changed += 1
+                break
+        return out
+
+    for seg in episode.get("segments") or []:
+        _map_card_strings(seg.get("overlays"), rewrite)
+        _map_card_strings(seg.get("visuals"), rewrite)
+    return changed
+
+
 def apply_corrections(episode: dict[str, Any], issues: list[dict[str, Any]]) -> int:
     by_id = {
         i["line_id"]: i
@@ -168,6 +344,7 @@ def apply_corrections(episode: dict[str, Any], issues: list[dict[str, Any]]) -> 
             if lid in by_id:
                 ln["text"] = by_id[lid]["corrected_text"]
                 rewritten += 1
+    rewritten += sync_cards_to_factcheck(episode, list(by_id.values()))
     return rewritten
 
 

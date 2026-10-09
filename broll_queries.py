@@ -221,7 +221,28 @@ EPISODE_FALLBACKS = [
 # case-insensitive (?i:...) otherwise. Queries still pass validate_query and
 # the robot / word-art photo filters.
 
+# Concepts that are too generic to borrow from the rest of the segment.
+# "supply chain" elsewhere in the episode must not turn a flavor beat into
+# port / crane footage. They still apply when the window itself matches.
+CONTEXT_ONLY_CONCEPTS = frozenset({
+    "supply_chain", "workflow", "collaboration", "executive",
+    "leadership_decisions", "productivity", "individual_use",
+    "training", "localization", "pilot_rollout",
+})
+
+# Window-only domain shots. Checked against the beat text, never the segment.
+WINDOW_DOMAIN_QUERIES: list[tuple[re.Pattern[str], list[str]]] = [
+    (re.compile(r"\b(spices?|flavou?rs?|seasonings?|herbs?|\bsage\b)\b", re.I),
+     ["spice blending laboratory", "chef tasting seasonings", "herb bowls on table"]),
+    (re.compile(r"\b(potatoes|potato|crops?|harvests?)\b", re.I),
+     ["potato crop field harvest", "farmers inspecting potato crop"]),
+]
+
 NAMED_CASES: list[tuple[str, re.Pattern[str], list[str]]] = [
+    ("mccormick", re.compile(r"(?i:\bmccormick\b|\bsage\b|spice trade|flavou?r development)"),
+     ["spice blending laboratory", "chef tasting seasonings", "herb bowls on table"]),
+    ("pepsico_crops", re.compile(r"(?i:\bpepsico\b|\bpepsi\b|\bpotato crops?\b)"),
+     ["potato crop field harvest", "farmers inspecting potato crop"]),
     ("zillow", re.compile(r"(?i:\bzillow\b|zestimate|\bredfin\b|\bopendoor\b|home[- ]?flipping|house[- ]?flipping|ibuy\w*)"),
      ["suburban houses street", "real estate agent showing house", "family touring new house", "home for sale front yard"]),
     ("pfizer_biontech", re.compile(r"(?i:\bpfizer\b|\bbiontech\b|\bmoderna\b|\bmrna\b|covid[- ]19 vaccine|\bvaccines?\b)"),
@@ -290,6 +311,9 @@ def concept_scores(window_text: str, context_text: str = "") -> list[tuple[str, 
     out: list[tuple[str, float, list[str]]] = []
     for name, pat, queries in CONCEPTS:
         w = len(pat.findall(window_text or ""))
+        # Generic logistics / office concepts do not leak in from segment context.
+        if name in CONTEXT_ONLY_CONCEPTS and w == 0:
+            continue
         c = len(pat.findall(context_text or "")) if context_text else 0
         score = 3.0 * w + 0.5 * min(c, 6)
         if score > 0:
@@ -310,6 +334,11 @@ def local_query_candidates(
     recent_set = {r.lower() for r in recent}
     ranked = concept_scores(window_text, context_text)
     cands: list[str] = []
+    for pat, queries in WINDOW_DOMAIN_QUERIES:
+        if pat.search(window_text or ""):
+            for q in queries:
+                if q not in cands:
+                    cands.append(q)
     for i, (_name, _score, queries) in enumerate(ranked[:4]):
         rot = queries[(salt + i) % len(queries):] + queries[: (salt + i) % len(queries)]
         for q in rot:
@@ -374,6 +403,19 @@ DIAGRAM_STOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Alt / keyword domains that are wrong unless the beat itself is about them.
+# McCormick flavor / SAGE must not take a port or crane still.
+_LOGISTICS_PHOTO_RE = re.compile(
+    r"\b(ports?|cranes?|shipping containers?|cargo ships?|container ships?|"
+    r"freight docks?|harbou?rs?|dockside|gantry cranes?)\b",
+    re.IGNORECASE,
+)
+_LOGISTICS_CONTEXT_RE = re.compile(
+    r"\b(ports?|cranes?|shipping|containers?|cargo|freight|logistics|"
+    r"warehouses?|harbou?rs?|docks?|supply chain)\b",
+    re.IGNORECASE,
+)
+
 
 def photo_rejected(photo: dict[str, Any], context_text: str = "", role: str = "") -> str | None:
     """Return a reject reason for a Pexels photo, or None when acceptable.
@@ -404,6 +446,12 @@ def photo_rejected(photo: dict[str, Any], context_text: str = "", role: str = ""
         return "stock slide label"
     if role == "diagram" and (DIAGRAM_STOCK_RE.search(blob) or TEMPLATE_LABEL_RE.search(alt)):
         return "diagram slot stock template"
+    kw = photo.get("keywords") or photo.get("tags") or ""
+    if isinstance(kw, (list, tuple)):
+        kw = " ".join(str(x) for x in kw)
+    domain_blob = f"{alt} {kw}"
+    if _LOGISTICS_PHOTO_RE.search(domain_blob) and not _LOGISTICS_CONTEXT_RE.search(context_text or ""):
+        return "unrelated domain"
     return None
 
 
@@ -537,4 +585,6 @@ __all__ = [
     "EPISODE_FALLBACKS",
     "named_case_queries",
     "NAMED_CASES",
+    "WINDOW_DOMAIN_QUERIES",
+    "CONTEXT_ONLY_CONCEPTS",
 ]

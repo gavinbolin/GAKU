@@ -84,3 +84,37 @@ Locked default. No flag turns this off.
   and template-slide B-roll.
 - Judgment / RAG explanatory sections and the recap get at least one strong
   graphic (stat, diagram, bullet card, or quadrant) even with no visual seat.
+
+## Match AI v2 rewatch (2026-10-09)
+
+Forward-only. These do not re-render an episode that already shipped.
+
+- Every script `quadrant` overlay is a Remotion 2x2 (`DiagramOverlay`
+  kind `quadrant`): four labelled cells and axis labels. The first intro
+  holds at least 10 seconds (`QUADRANT_INTRO_MIN_MS`). Later overlays in the
+  same episode are their own matrices (a highlight lights one cell). The
+  planner used to keep only the first overlay, so the others stayed B-roll
+  plus the chapter pill.
+- After placement, any stretch longer than 18 seconds with no card, overlay,
+  or B-roll cut gets a card or a B-roll cut (`MAX_GRAPHICS_GAP_S`).
+- Factcheck rewrites flow into bullet, takeaway, chapter, and stat card
+  copy. A card that still says the rejected claim (Apple metalenses
+  "integrated" / "launched") is replaced from `corrected_text` (patents /
+  preparing to embed). "integrating" is not treated as "integrated".
+- The close / `close_cta` segment gets its own card: a short landing line
+  and a light CTA, titled with the close, held through the sign-off. The
+  corner chip is that title. It does not reuse Key Takeaways.
+- B-roll queries prefer the company, product, or domain named in the beat
+  (McCormick / SAGE → spice and flavor, not port or crane footage). Generic
+  logistics and office concepts do not leak in from the rest of the segment.
+  A still whose alt text or keywords are a port, crane, or cargo ship is
+  rejected unless the beat itself is about logistics. Robot, ghosting,
+  template-slide, and diagram-slot whiteboard rejects stay.
+- A range or a qualified stat stores the full string on the overlay `value`
+  (`More than 30%`, not `30%`). That is the string Remotion draws.
+- A StatHero stays up through the last spoken word of the stat plus a short
+  pad (`STAT_END_PAD_MS`). It does not hide while the number is still being
+  said.
+- `visual_plan_report.json` `stat_inventory` lists heroes that rendered and
+  heroes that were planned but did not. A stat that renders (17000, $304M,
+  2×) is written back onto the episode overlays and is not reported missing.

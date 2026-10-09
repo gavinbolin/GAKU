@@ -1299,6 +1299,13 @@ def build_visual_manifest(
     import visual_timeline as vt
 
     picker = PexelsPicker(run_dir, pexels_key)
+    factcheck = None
+    fc_path = run_dir / "factcheck_report.json"
+    if fc_path.is_file():
+        try:
+            factcheck = json.loads(fc_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            factcheck = None
     plan = vt.plan_episode(
         episode=episode,
         durations=durations_map,
@@ -1312,6 +1319,7 @@ def build_visual_manifest(
         clean_title=_clean_segment_title,
         complete_items=_complete_framework_items,
         gemini_query=_make_gemini_query(mcp_client, run_dir),
+        factcheck=factcheck if isinstance(factcheck, dict) else None,
     )
     picker.save()
     plan_segments = plan["segments"]
@@ -1332,6 +1340,11 @@ def build_visual_manifest(
             for b in plan["report"]["broll"]
         ]
         (run_dir / "graphics_manifest.json").write_text(json.dumps(gm, indent=2), encoding="utf-8")
+        # Overlay values and factcheck card copy were synced onto this copy.
+        # Persist them so the episode inventory matches the heroes that render.
+        (run_dir / "episode.json").write_text(
+            json.dumps(episode, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
     except OSError as exc:
         print(f"[visual_queue] warn: could not write plan report: {exc}", file=sys.stderr)
     summ = plan["report"].get("summary") or {}
@@ -1359,10 +1372,12 @@ def build_visual_manifest(
     # 2. One SegmentCard per segment.
     segments = episode.get("segments") or []
     for i, (seg, timing) in enumerate(zip(segments, seg_timings), 1):
+        seg_idx = i - 1
         seg_title = _clean_segment_title((seg.get("title") or f"Segment {i}").strip())
+        if vt.is_close_segment(seg, seg_idx, n_segs) and vt.KEY_TAKEAWAYS_RE.search(seg_title):
+            seg_title = "Stop Piloting, Start Leading"
         bullets = _extract_bullets(seg)
         speaker = _current_speaker(seg)
-        seg_idx = i - 1
 
         # SegmentCard runs for the full segment (see card_windows above). The
         # opening/closing title cards crossfade over the start/end.
