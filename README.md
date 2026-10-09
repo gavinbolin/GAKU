@@ -88,6 +88,27 @@ including `af_bella` and `am_michael` (the defaults baked into `kokoroClient.ts`
 
 Override the URL with `KOKORO_URL=http://other-host:8880` if you run it elsewhere.
 
+`research_podcast.py` stops the Docker container named `kokoro` when a build
+that used Kokoro finishes, fails, or is interrupted (Ctrl+C). It never stops
+any other container. The stop runs only if this process started the container,
+or `docker inspect` shows the image name contains `kokoro-fastapi`. If Kokoro
+is not already answering `GET /v1/audio/voices`, the build starts an existing
+`kokoro` container, or creates `ghcr.io/remsky/kokoro-fastapi-gpu:latest`
+(no silent CPU fallback), and waits for that health check.
+
+Leave the container running with `--no-kokoro-autostop` or
+`GAKU_KOKORO_AUTOSTOP=0` (`false`, `no`, and `off` also disable it). The
+default is on. Runs that never use Kokoro (a non-Kokoro `TTS_BACKEND`, or a
+path that returns before synthesis) do not stop the container.
+
+One-line smoke test through the same ensure / stop path:
+
+```bash
+python kokoro_lifecycle.py --smoke "Hello from Gaku."
+```
+
+That writes `output/kokoro_smoke/smoke.wav` and then stops the container.
+
 ### 3. ffmpeg
 
 Make sure `ffmpeg` (and `ffprobe`) are on your `PATH`. On Windows:

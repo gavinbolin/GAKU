@@ -12,6 +12,11 @@ Usage:
   python research_podcast.py --topic "Quantum Computing" --out output/podcasts
   python research_podcast.py --research-md results.md --topic "Quantum Computing"
 
+Kokoro autostop: a run that synthesizes with Kokoro stops the Docker container
+named `kokoro` on the way out (success, error, or Ctrl+C). Disable with
+--no-kokoro-autostop or GAKU_KOKORO_AUTOSTOP=0/false/no/off. Runs that never
+use Kokoro do not stop it.
+
 # YouTube upload: place youtube_client_secrets.json in this directory.
 # On first run it will open a browser for OAuth approval.
 # Videos upload as private — review before publishing.
@@ -20,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -61,6 +67,7 @@ def _pick_voices(rng: random.Random | None = None) -> tuple[str, str]:
 # UTF-8 stdio fix.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from audiobook import MCPClient, MCP_SERVER_CMD  # noqa: E402
+import kokoro_lifecycle  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
@@ -285,6 +292,13 @@ def main() -> int:
         "--skip-factcheck",
         action="store_true",
         help="Skip the primary-source fact-check step even when a source file is present.",
+    )
+    parser.add_argument(
+        "--no-kokoro-autostop",
+        action="store_true",
+        help="Leave the Kokoro Docker container running when this build finishes. "
+             "By default the container named kokoro is stopped after a run that used "
+             "Kokoro (also disabled by GAKU_KOKORO_AUTOSTOP=0/false/no/off).",
     )
     args = parser.parse_args()
 
@@ -511,142 +525,158 @@ def main() -> int:
         line_count = sum(len(s.get("lines") or []) for s in segments)
         print(f"[podcast] episode has {len(segments)} segments, {line_count} lines", file=sys.stderr)
 
-        print("[podcast] synthesizing per-line audio via Kokoro…", file=sys.stderr)
-        audio_resp = client.call("generate_audio", {
-            "episode": episode,
-            "out_dir": str(audio_dir),
-        })
-        if not isinstance(audio_resp, dict) or not audio_resp.get("clips"):
-            print("[podcast] generate_audio returned no clips", file=sys.stderr)
-            return 4
-        clips = audio_resp["clips"]
-        print(f"[podcast] {len(clips)} clips synthesized", file=sys.stderr)
-
-        # Drop any zero-path clips (shouldn't happen here, but be defensive).
-        clips = [c for c in clips if c.get("path")]
-
-        final_wav = out_dir / "podcast.wav"
-        print(f"[podcast] concatenating to {final_wav}…", file=sys.stderr)
-        client.call("concatenate_audio_track", {
-            "clips": clips,
-            "out_path": str(final_wav),
-        })
-
-        # Drop the per-line WAV fragments once the final podcast WAV exists.
-        if not args.keep_intermediates and audio_dir.exists():
-            shutil.rmtree(audio_dir, ignore_errors=True)
-            print(f"[podcast] cleaned up intermediates in {audio_dir}", file=sys.stderr)
-
-        # --------- OPTIONAL VIDEO ASSEMBLY (Tier 2) ----------
-        # Off by default. When --video is passed:
-        #   1. Render PodcastBackground (looped base layer)
-        #   2. compute_visual_timings → absolute start/end per visual
-        #   3. Render each scripted visual via render_visual
-        #   4. compose_final_video → podcast.mp4
-        # Video is composed against the WAV so we don't inherit the 25 ms
-        # MP3 priming delay; MP3 conversion is the very last step below.
-        final_video_path = None
-        if args.video:
-            try:
-                final_video_path = _build_video(
-                    client=client,
-                    episode=episode,
-                    clips=clips,
-                    audio_for_video=final_wav,
-                    out_dir=out_dir,
-                    topic=args.topic,
-                )
-            except Exception as exc:
-                print(f"[podcast] WARNING: video assembly failed: {exc}", file=sys.stderr)
-                # Audio still ships even if video failed.
-
-        # Final step (both audio-only and video paths): compress WAV → MP3.
-        # A typical 8-minute podcast at 64k mono is ~3.8 MB vs ~23 MB as WAV.
-        final_mp3 = out_dir / "podcast.mp3"
-        print(f"[podcast] compressing to {final_mp3} ({args.mp3_bitrate} mp3)…", file=sys.stderr)
-        mp3_ok = False
-        try:
-            mp3_proc = subprocess.run(
-                [
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-i", str(final_wav),
-                    "-c:a", "libmp3lame",
-                    "-b:a", args.mp3_bitrate,
-                    "-ac", "1",
-                    str(final_mp3),
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+        if (os.environ.get("TTS_BACKEND") or "kokoro").strip().lower() == "kokoro":
+            _kokoro_cm = kokoro_lifecycle.kokoro_session(
+                kokoro_lifecycle.default_base_url(),
+                autostop=kokoro_lifecycle.autostop_enabled(
+                    cli_disable=args.no_kokoro_autostop,
+                ),
             )
-            if mp3_proc.returncode != 0:
+        else:
+            print(
+                "[podcast] TTS backend is not Kokoro; not managing the kokoro container",
+                file=sys.stderr,
+            )
+            _kokoro_cm = contextlib.nullcontext()
+        # Ensure on enter. The session finally stops Kokoro on return, error,
+        # or Ctrl+C. Returning before this point means this run did not use it.
+        with _kokoro_cm:
+            print("[podcast] synthesizing per-line audio via Kokoro…", file=sys.stderr)
+            audio_resp = client.call("generate_audio", {
+                "episode": episode,
+                "out_dir": str(audio_dir),
+            })
+            if not isinstance(audio_resp, dict) or not audio_resp.get("clips"):
+                print("[podcast] generate_audio returned no clips", file=sys.stderr)
+                return 4
+            clips = audio_resp["clips"]
+            print(f"[podcast] {len(clips)} clips synthesized", file=sys.stderr)
+
+            # Drop any zero-path clips (shouldn't happen here, but be defensive).
+            clips = [c for c in clips if c.get("path")]
+
+            final_wav = out_dir / "podcast.wav"
+            print(f"[podcast] concatenating to {final_wav}…", file=sys.stderr)
+            client.call("concatenate_audio_track", {
+                "clips": clips,
+                "out_path": str(final_wav),
+            })
+
+            # Drop the per-line WAV fragments once the final podcast WAV exists.
+            if not args.keep_intermediates and audio_dir.exists():
+                shutil.rmtree(audio_dir, ignore_errors=True)
+                print(f"[podcast] cleaned up intermediates in {audio_dir}", file=sys.stderr)
+
+            # --------- OPTIONAL VIDEO ASSEMBLY (Tier 2) ----------
+            # Off by default. When --video is passed:
+            #   1. Render PodcastBackground (looped base layer)
+            #   2. compute_visual_timings → absolute start/end per visual
+            #   3. Render each scripted visual via render_visual
+            #   4. compose_final_video → podcast.mp4
+            # Video is composed against the WAV so we don't inherit the 25 ms
+            # MP3 priming delay; MP3 conversion is the very last step below.
+            final_video_path = None
+            if args.video:
+                try:
+                    final_video_path = _build_video(
+                        client=client,
+                        episode=episode,
+                        clips=clips,
+                        audio_for_video=final_wav,
+                        out_dir=out_dir,
+                        topic=args.topic,
+                    )
+                except Exception as exc:
+                    print(f"[podcast] WARNING: video assembly failed: {exc}", file=sys.stderr)
+                    # Audio still ships even if video failed.
+
+            # Final step (both audio-only and video paths): compress WAV → MP3.
+            # A typical 8-minute podcast at 64k mono is ~3.8 MB vs ~23 MB as WAV.
+            final_mp3 = out_dir / "podcast.mp3"
+            print(f"[podcast] compressing to {final_mp3} ({args.mp3_bitrate} mp3)…", file=sys.stderr)
+            mp3_ok = False
+            try:
+                mp3_proc = subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-i", str(final_wav),
+                        "-c:a", "libmp3lame",
+                        "-b:a", args.mp3_bitrate,
+                        "-ac", "1",
+                        str(final_mp3),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if mp3_proc.returncode != 0:
+                    print(
+                        f"[podcast] WARNING: mp3 transcode failed (exit {mp3_proc.returncode}); "
+                        f"keeping WAV.\n  stderr: {mp3_proc.stderr.strip()[-500:]}",
+                        file=sys.stderr,
+                    )
+                else:
+                    mp3_ok = True
+            except FileNotFoundError:
                 print(
-                    f"[podcast] WARNING: mp3 transcode failed (exit {mp3_proc.returncode}); "
-                    f"keeping WAV.\n  stderr: {mp3_proc.stderr.strip()[-500:]}",
+                    "[podcast] WARNING: ffmpeg not found on PATH; skipping mp3 compression.",
                     file=sys.stderr,
                 )
+
+            if mp3_ok:
+                wav_size_mb = final_wav.stat().st_size / (1024 * 1024) if final_wav.exists() else 0
+                mp3_size_mb = final_mp3.stat().st_size / (1024 * 1024)
+                print(
+                    f"[podcast] mp3 ready: {mp3_size_mb:.1f} MB "
+                    f"(was {wav_size_mb:.1f} MB as wav, {mp3_size_mb / max(wav_size_mb, 0.01) * 100:.0f}% of original)",
+                    file=sys.stderr,
+                )
+                # Delete the WAV by default to honor the "compress" intent.
+                if not args.keep_wav and final_wav.exists():
+                    try:
+                        final_wav.unlink()
+                        print("[podcast] removed uncompressed WAV (pass --keep-wav to keep it)", file=sys.stderr)
+                    except OSError as exc:
+                        print(f"[podcast] WARNING: could not delete WAV: {exc}", file=sys.stderr)
+
+            # --- YouTube upload ---
+            if final_video_path and final_video_path.exists() and not args.no_upload:
+                source_for_series = Path(args.source).resolve() if getattr(args, "source", None) else None
+                research_for_series = Path(args.research_md).resolve() if getattr(args, "research_md", None) else None
+                series_key = _resolve_and_stamp_series(
+                    episode,
+                    explicit_series=getattr(args, "series", None),
+                    run_dir=out_dir,
+                    research_md=research_for_series,
+                    source_path=source_for_series,
+                )
+                _try_youtube_upload(
+                    out_dir, episode, final_video_path,
+                    privacy_status=args.upload_privacy,
+                    title_override=args.yt_title,
+                    series=series_key,
+                )
+
+            final_audio_path = final_mp3 if mp3_ok else final_wav
+
+            # --- Drive sync ---
+            # Share exactly one artifact per run: the mp4 when video was produced,
+            # otherwise the mp3. The Drive folder is the single source of truth for
+            # finished episodes, so we don't want duplicate audio + video copies.
+            drive_src = final_video_path if final_video_path and final_video_path.exists() else (
+                final_mp3 if mp3_ok and final_mp3.exists() else None
+            )
+            if drive_src is not None:
+                _copy_to_drive(drive_src, out_dir.name)
+
+            if factcheck_warning:
+                print(f"\n[podcast] {factcheck_warning}", file=sys.stderr)
+            if final_video_path:
+                print(f"\n[podcast] DONE: video={final_video_path}  audio={final_audio_path}")
             else:
-                mp3_ok = True
-        except FileNotFoundError:
-            print(
-                "[podcast] WARNING: ffmpeg not found on PATH; skipping mp3 compression.",
-                file=sys.stderr,
-            )
-
-        if mp3_ok:
-            wav_size_mb = final_wav.stat().st_size / (1024 * 1024) if final_wav.exists() else 0
-            mp3_size_mb = final_mp3.stat().st_size / (1024 * 1024)
-            print(
-                f"[podcast] mp3 ready: {mp3_size_mb:.1f} MB "
-                f"(was {wav_size_mb:.1f} MB as wav, {mp3_size_mb / max(wav_size_mb, 0.01) * 100:.0f}% of original)",
-                file=sys.stderr,
-            )
-            # Delete the WAV by default to honor the "compress" intent.
-            if not args.keep_wav and final_wav.exists():
-                try:
-                    final_wav.unlink()
-                    print("[podcast] removed uncompressed WAV (pass --keep-wav to keep it)", file=sys.stderr)
-                except OSError as exc:
-                    print(f"[podcast] WARNING: could not delete WAV: {exc}", file=sys.stderr)
-
-        # --- YouTube upload ---
-        if final_video_path and final_video_path.exists() and not args.no_upload:
-            source_for_series = Path(args.source).resolve() if getattr(args, "source", None) else None
-            research_for_series = Path(args.research_md).resolve() if getattr(args, "research_md", None) else None
-            series_key = _resolve_and_stamp_series(
-                episode,
-                explicit_series=getattr(args, "series", None),
-                run_dir=out_dir,
-                research_md=research_for_series,
-                source_path=source_for_series,
-            )
-            _try_youtube_upload(
-                out_dir, episode, final_video_path,
-                privacy_status=args.upload_privacy,
-                title_override=args.yt_title,
-                series=series_key,
-            )
-
-        final_audio_path = final_mp3 if mp3_ok else final_wav
-
-        # --- Drive sync ---
-        # Share exactly one artifact per run: the mp4 when video was produced,
-        # otherwise the mp3. The Drive folder is the single source of truth for
-        # finished episodes, so we don't want duplicate audio + video copies.
-        drive_src = final_video_path if final_video_path and final_video_path.exists() else (
-            final_mp3 if mp3_ok and final_mp3.exists() else None
-        )
-        if drive_src is not None:
-            _copy_to_drive(drive_src, out_dir.name)
-
-        if factcheck_warning:
-            print(f"\n[podcast] {factcheck_warning}", file=sys.stderr)
-        if final_video_path:
-            print(f"\n[podcast] DONE: video={final_video_path}  audio={final_audio_path}")
-        else:
-            print(f"\n[podcast] DONE: {final_audio_path}")
-        return 0
+                print(f"\n[podcast] DONE: {final_audio_path}")
+            return 0
     finally:
         client.close()
 
