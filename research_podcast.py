@@ -382,6 +382,8 @@ def main() -> int:
 
     print(f"[podcast] spawning MCP server: {' '.join(MCP_SERVER_CMD)}", file=sys.stderr)
     client = MCPClient(MCP_SERVER_CMD)
+    from gemini_safety import guard_mcp_call
+    client.call = guard_mcp_call(client.call)
 
     try:
         if args.episode_in:

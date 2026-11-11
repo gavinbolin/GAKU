@@ -22,3 +22,22 @@ def stop_on_gemini_budget_error(exc: BaseException) -> None:
         Path(marker).write_text(json.dumps({"stopped": True, "runtime": "python", "reason": "quota_billing_or_auth_signal", "status": status if isinstance(status, int) else None}), encoding="utf-8")
     print("[gemini-safety] Quota/billing/auth signal: stopped without retry or key/model rotation.", file=sys.stderr)
     raise SystemExit(85)
+
+
+def guard_mcp_call(call):
+    """Propagate a Node stop marker past best-effort Exception handlers."""
+    def check_marker():
+        marker = os.environ.get("GAKU_GEMINI_STOP_FILE")
+        if enabled() and marker and Path(marker).is_file():
+            raise SystemExit(85)
+
+    def guarded(*args, **kwargs):
+        check_marker()
+        try:
+            result = call(*args, **kwargs)
+        except Exception:
+            check_marker()
+            raise
+        check_marker()
+        return result
+    return guarded

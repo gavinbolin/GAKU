@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gemini_util import generate_json
-from gemini_safety import stop_on_gemini_budget_error
+from gemini_safety import stop_on_gemini_budget_error, guard_mcp_call
 
 class BudgetStopTests(unittest.TestCase):
     def test_quota_stops_before_any_retry_or_rotation(self):
@@ -32,6 +32,17 @@ class BudgetStopTests(unittest.TestCase):
     def test_policy_off_preserves_legacy_behavior(self):
         with patch.dict(os.environ, {"GAKU_GEMINI_STOP_ON_QUOTA":"0"}):
             stop_on_gemini_budget_error(RuntimeError("quota"))
+
+    def test_node_marker_aborts_orchestrator_even_if_call_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d)/"stop.json"
+            def failed_call(*args):
+                marker.write_text('{"stopped":true}')
+                raise RuntimeError("MCP closed stdout")
+            with patch.dict(os.environ, {"GAKU_GEMINI_STOP_ON_QUOTA":"1", "GAKU_GEMINI_STOP_FILE":str(marker)}):
+                with self.assertRaises(SystemExit) as stopped:
+                    guard_mcp_call(failed_call)("synthesize")
+            self.assertEqual(stopped.exception.code,85)
 
     def test_node_policy_exits_and_writes_safe_marker(self):
         root=Path(__file__).resolve().parents[1]
