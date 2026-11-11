@@ -52,7 +52,7 @@ badges remain optional and are **not** applied automatically (they fight punchy 
 ## Backfill
 
 `powershell
-& "C:\Users\gavin\AppData\Local\Programs\Python\Python310\python.exe"   "C:\Users\gavin\.PROJECT\PROJECT GAKU\podcast-pipeline\yt_playlist_backfill.py" --series hbr
+& "C:\Users\gavin\.PROJECT\PROJECT GAKU\podcast-pipeline\.venv\Scripts\python.exe"   "C:\Users\gavin\.PROJECT\PROJECT GAKU\podcast-pipeline\yt_playlist_backfill.py" --series hbr
 `
 
 Creates the playlist if needed, adds known HBR public videos, optionally retitles with | HBR. Skips LangChain. Does not upload or delete videos.

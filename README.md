@@ -64,6 +64,10 @@ Gemini script step.
 
 ## Setup
 
+Use the pinned [Python 3.12 project environment](docs/python-environment.md);
+launch the UI with `./run.ps1`. See the [local preview review loop](docs/review-loop.md)
+for bounded validation without new generation or publishing.
+
 ### 1. Node packages
 
 ```bash

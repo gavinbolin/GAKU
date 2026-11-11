@@ -47,7 +47,7 @@ Manual set for an existing video:
 $root = 'C:\Users\gavin\.PROJECT\PROJECT GAKU'
 $env:PYTHONPATH = $root
 Set-Location -LiteralPath $root
-& "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe" -c @"
+& "$root\podcast-pipeline\.venv\Scripts\python.exe" -c @"
 import youtube_upload as yt
 from pathlib import Path
 import thumbnail_hybrid as th
