@@ -18,6 +18,11 @@ import { PhotoCard } from "./templates/PhotoCard";
 import { PercentageRing } from "./templates/PercentageRing";
 import { SegmentCard } from "./templates/SegmentCard";
 
+// Remotion requires a string-indexed props record. Keep each template's
+// required fields at the registration boundary without weakening the templates.
+type CompositionSchema = NonNullable<React.ComponentProps<typeof Composition>["schema"]>;
+type InputOf<C extends React.ElementType> = React.ComponentProps<C> & Record<string, unknown>;
+
 const FPS = 30;
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -27,8 +32,8 @@ const DEFAULT_DURATION = 180; // 6 s @ 30fps; render_visual passes durationInFra
 // reads it back so each Composition's runtime length matches the request.
 // Without this, all renders snap to the static `durationInFrames` prop on
 // the Composition tag and ignore --props.
-const durationFromProps = ({ props }: { props: Record<string, unknown> }) => {
-  const raw = props.durationInFrames;
+const durationFromProps = <Props extends object>({ props }: { props: Props }) => {
+  const raw = (props as { durationInFrames?: unknown }).durationInFrames;
   const dur = typeof raw === "number" && raw > 0 ? Math.round(raw) : DEFAULT_DURATION;
   return { durationInFrames: dur };
 };
@@ -36,7 +41,7 @@ const durationFromProps = ({ props }: { props: Record<string, unknown> }) => {
 export const RemotionRoot: React.FC = () => {
   return (
     <>
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof TitleCard>>
         id="TitleCard"
         component={TitleCard}
         calculateMetadata={durationFromProps}
@@ -49,7 +54,7 @@ export const RemotionRoot: React.FC = () => {
           subtitle: "PROJECT GAKU",
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof GrowthCurve>>
         id="GrowthCurve"
         component={GrowthCurve}
         calculateMetadata={durationFromProps}
@@ -70,7 +75,7 @@ export const RemotionRoot: React.FC = () => {
           y_axis_label: "Value",
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof StatCallout>>
         id="StatCallout"
         component={StatCallout}
         calculateMetadata={durationFromProps}
@@ -84,7 +89,7 @@ export const RemotionRoot: React.FC = () => {
           caption: "Sample stat caption.",
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof BookCover>>
         id="BookCover"
         component={BookCover}
         calculateMetadata={durationFromProps}
@@ -97,7 +102,7 @@ export const RemotionRoot: React.FC = () => {
           author: "Author Name",
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof ChapterCard>>
         id="ChapterCard"
         component={ChapterCard}
         calculateMetadata={durationFromProps}
@@ -110,7 +115,7 @@ export const RemotionRoot: React.FC = () => {
           chapter_title: "Introduction",
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof FlowDiagram>>
         id="FlowDiagram"
         component={FlowDiagram}
         calculateMetadata={durationFromProps}
@@ -128,7 +133,7 @@ export const RemotionRoot: React.FC = () => {
           theme: "dark" as const,
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof PodcastBackground>>
         id="PodcastBackground"
         component={PodcastBackground}
         calculateMetadata={durationFromProps}
@@ -143,7 +148,7 @@ export const RemotionRoot: React.FC = () => {
           subtitle: "PROJECT GAKU",
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof SpeakerCard>>
         id="SpeakerCard"
         component={SpeakerCard}
         calculateMetadata={durationFromProps}
@@ -158,7 +163,7 @@ export const RemotionRoot: React.FC = () => {
           show_waveform: true,
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof PullQuote>>
         id="PullQuote"
         component={PullQuote}
         calculateMetadata={durationFromProps}
@@ -172,7 +177,7 @@ export const RemotionRoot: React.FC = () => {
           theme: "dark" as const,
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof KeyTermDefinition>>
         id="KeyTermDefinition"
         component={KeyTermDefinition}
         calculateMetadata={durationFromProps}
@@ -188,7 +193,7 @@ export const RemotionRoot: React.FC = () => {
           category: "Physics",
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof StatAnimation>>
         id="StatAnimation"
         component={StatAnimation}
         calculateMetadata={durationFromProps}
@@ -204,7 +209,7 @@ export const RemotionRoot: React.FC = () => {
           animate_type: "counter" as const,
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof ConceptComparison>>
         id="ConceptComparison"
         component={ConceptComparison}
         calculateMetadata={durationFromProps}
@@ -232,7 +237,7 @@ export const RemotionRoot: React.FC = () => {
           },
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof TimelineVisual>>
         id="TimelineVisual"
         component={TimelineVisual}
         calculateMetadata={durationFromProps}
@@ -250,7 +255,7 @@ export const RemotionRoot: React.FC = () => {
           ],
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof PhotoCard>>
         id="PhotoCard"
         component={PhotoCard}
         calculateMetadata={durationFromProps}
@@ -266,7 +271,7 @@ export const RemotionRoot: React.FC = () => {
           overlay_opacity: 0.5,
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof PercentageRing>>
         id="PercentageRing"
         component={PercentageRing}
         calculateMetadata={durationFromProps}
@@ -281,7 +286,7 @@ export const RemotionRoot: React.FC = () => {
           show_remaining: true,
         }}
       />
-      <Composition
+      <Composition<CompositionSchema, InputOf<typeof SegmentCard>>
         id="SegmentCard"
         component={SegmentCard}
         calculateMetadata={durationFromProps}
