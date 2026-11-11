@@ -585,7 +585,7 @@ interface SegmentBody {
 }
 
 async function generateSegment(
-  buildModel: (client: GoogleGenerativeAI) => GenerativeModel,
+  buildModel: (client: GoogleGenerativeAI, modelName: string) => GenerativeModel,
   userMessage: string,
   segId: string
 ): Promise<SegmentBody | null> {
