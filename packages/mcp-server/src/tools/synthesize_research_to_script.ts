@@ -37,6 +37,7 @@ export interface SynthesizeResult {
 }
 
 import { geminiModels } from "../gemini_models.js";
+import { stopOnGeminiBudgetError } from "../gemini_safety.js";
 
 const MODEL_FALLBACKS = geminiModels(undefined);
 const MODEL = MODEL_FALLBACKS[0];
@@ -154,6 +155,7 @@ async function callGeminiWithRotation(
         if (modelName !== MODEL) log(`using fallback model ${modelName}`);
         return result;
       } catch (err) {
+        stopOnGeminiBudgetError(err);
         lastErr = err;
         const msg = (err as Error).message || String(err);
         if (!isRateLimitError(err) && !msg.includes("404") && !msg.includes("not found")) {

@@ -25,6 +25,7 @@ export interface GeminiImageQueryResult {
 }
 
 import { geminiModels } from "../gemini_models.js";
+import { stopOnGeminiBudgetError } from "../gemini_safety.js";
 
 const MODEL_FALLBACKS = geminiModels(process.env.GEMINI_IMAGE_QUERY_MODEL);
 const MODEL = MODEL_FALLBACKS[0];
@@ -70,6 +71,7 @@ async function callGeminiWithFallback(
         stickyModel = modelName;
         return { result, model: modelName };
       } catch (err) {
+        stopOnGeminiBudgetError(err);
         lastErr = err;
         if (isModelError(err)) break; // try next model
         if (!isRateLimitError(err)) throw err;

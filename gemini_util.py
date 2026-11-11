@@ -16,6 +16,7 @@ import sys
 import time
 from typing import Any, Callable
 from pathlib import Path
+from gemini_safety import enabled as budget_stop_enabled, stop_on_gemini_budget_error
 
 DEFAULT_FALLBACK_MODELS = json.loads(
     (Path(__file__).resolve().parent / "config" / "gemini_models.json").read_text(encoding="utf-8")
@@ -97,7 +98,10 @@ def generate_json(
     def _default_call(key: str, model_name: str, text: str, gen_cfg: dict[str, Any]) -> str:
         import google.generativeai as genai
         genai.configure(api_key=key)
-        return genai.GenerativeModel(model_name).generate_content(text, generation_config=gen_cfg).text or ""
+        return genai.GenerativeModel(model_name).generate_content(
+            text, generation_config=gen_cfg,
+            request_options={"retry": None} if budget_stop_enabled() else None,
+        ).text or ""
 
     call = call or _default_call
     for model_name in models:
@@ -112,6 +116,7 @@ def generate_json(
                     attempts.append({"model": model_name, "key": ki, "ok": True})
                     return parsed, {"model": model_name, "key_index": ki, "attempts": attempts}
                 except Exception as exc:  # noqa: BLE001
+                    stop_on_gemini_budget_error(exc)
                     kind, delay = classify_error(exc)
                     attempts.append({"model": model_name, "key": ki, "ok": False, "kind": kind,
                                      "error": f"{type(exc).__name__}: {str(exc)[:240]}"})

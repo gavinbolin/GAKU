@@ -197,3 +197,9 @@ Daily-loop items folded into prompts + `visual_queue.py` + Remotion overlays + `
 Use `--no-drive` or `GAKU_NO_DRIVE=1` to independently disable Drive copy.
 A missing Drive directory is warned about and skipped; it is never created.
 `build_video.py --no-upload` remuxes/renders locally and has no Drive-copy path.
+
+For quota/billing-sensitive attempts, set `GAKU_GEMINI_STOP_ON_QUOTA=1`.
+Python helpers and podcast MCP synthesis/image-query tools then terminate on
+the first quota, billing, payment, or auth signal without retry/key rotation.
+An optional `GAKU_GEMINI_STOP_FILE` records a safe, credential-free stop marker.
+This is a stop policy, **not** proof that a successful request is free-tier.
