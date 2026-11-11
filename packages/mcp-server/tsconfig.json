@@ -13,6 +13,16 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["src/**/*", "../schema/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ],
+  "references": [
+    {
+      "path": "../schema"
+    }
+  ]
 }
