@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+from pexels_http import pexels_headers
+
 # ---------------------------------------------------------------------------
 # Query validation
 # ---------------------------------------------------------------------------
@@ -518,7 +520,7 @@ class PexelsPicker:
             self.api_calls += 1
             resp = requests.get(
                 "https://api.pexels.com/v1/search",
-                headers={"Authorization": self.key},
+                headers=pexels_headers(self.key),
                 params={"query": q, "per_page": self.per_page, "orientation": orientation},
                 timeout=15,
             )

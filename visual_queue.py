@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from pexels_http import pexels_headers
+
 COLOR_PRIMARY = "#7C3AED"  # legacy default — kept for backward compat
 COLOR_SECONDARY = "#0EA5E9"  # legacy default — kept for backward compat
 
@@ -1062,7 +1064,7 @@ def fetch_pexels_photo(
     try:
         resp = requests.get(
             "https://api.pexels.com/v1/search",
-            headers={"Authorization": key},
+            headers=pexels_headers(key),
             params={"query": query, "per_page": 5, "orientation": orientation},
             timeout=15,
         )
