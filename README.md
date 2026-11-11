@@ -186,3 +186,10 @@ These are the wired-up-but-not-finished pieces. Ordered by what will bite first.
 ## Approved Gaku improvements (2026-09)
 
 Daily-loop items folded into prompts + `visual_queue.py` + Remotion overlays + `factcheck_episode.py` (HBR / framework listens). See `prompts/gemini-script-gen.md` section `APPROVED_GAKU_IMPROVEMENTS_2026_09`.
+
+## Local-only safety
+
+`research_podcast.py --no-upload` disables both YouTube upload and Drive copy.
+Use `--no-drive` or `GAKU_NO_DRIVE=1` to independently disable Drive copy.
+A missing Drive directory is warned about and skipped; it is never created.
+`build_video.py --no-upload` remuxes/renders locally and has no Drive-copy path.

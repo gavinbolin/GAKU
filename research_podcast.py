@@ -257,7 +257,12 @@ def main() -> int:
     parser.add_argument(
         "--no-upload",
         action="store_true",
-        help="Skip YouTube upload even if credentials are present",
+        help="Keep outputs local: skip YouTube upload and Drive copy",
+    )
+    parser.add_argument(
+        "--no-drive",
+        action="store_true",
+        help="Skip Drive copy (also disabled by --no-upload or GAKU_NO_DRIVE=1)",
     )
     parser.add_argument(
         "--upload-privacy",
@@ -668,7 +673,7 @@ def main() -> int:
                 final_mp3 if mp3_ok and final_mp3.exists() else None
             )
             if drive_src is not None:
-                _copy_to_drive(drive_src, out_dir.name)
+                _copy_to_drive(drive_src, out_dir.name, disabled=args.no_upload or args.no_drive)
 
             if factcheck_warning:
                 print(f"\n[podcast] {factcheck_warning}", file=sys.stderr)
@@ -681,12 +686,15 @@ def main() -> int:
         client.close()
 
 
-def _copy_to_drive(src: Path, run_name: str) -> None:
+def _copy_to_drive(src: Path, run_name: str, *, disabled: bool = False) -> None:
     """Copy a single finished artifact (mp4 or mp3) into the Drive sync folder
     under the run-dir name so it sorts alongside prior episodes. Best-effort:
     a missing Drive mount or copy failure is logged but not fatal."""
-    if not DRIVE_SYNC_DIR.exists():
-        print(f"[podcast] Drive sync folder not found: {DRIVE_SYNC_DIR} — skipping", file=sys.stderr)
+    if disabled or os.environ.get("GAKU_NO_DRIVE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        print("[podcast] Drive copy disabled; keeping output local", file=sys.stderr)
+        return
+    if not DRIVE_SYNC_DIR.is_dir():
+        print(f"[podcast] WARNING: Drive sync folder not found: {DRIVE_SYNC_DIR} - skipping", file=sys.stderr)
         return
     dest = DRIVE_SYNC_DIR / f"{run_name}{src.suffix}"
     try:
