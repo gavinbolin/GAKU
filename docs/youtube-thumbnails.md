@@ -44,7 +44,7 @@ Also used by `build_video._try_youtube_upload` and `research_podcast` upload.
 Manual set for an existing video:
 
 ```powershell
-$root = 'C:\Users\gavin\..PROJECT\PROJECT GAKU'
+$root = 'C:\Users\gavin\.PROJECT\PROJECT GAKU'
 $env:PYTHONPATH = $root
 Set-Location -LiteralPath $root
 & "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe" -c @"

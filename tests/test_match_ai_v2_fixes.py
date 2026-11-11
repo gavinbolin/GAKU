@@ -18,7 +18,7 @@ sys.path.insert(0, str(HERE))
 import broll_queries as bq  # noqa: E402
 
 REVIEW = Path(
-    r"C:\Users\gavin\..PROJECT\PROJECT GAKU\output\gaku-review"
+    r"C:\Users\gavin\.PROJECT\PROJECT GAKU\output\gaku-review"
     r"\20261009_0922_08.10.26_Match_AI_Strategy_Bouque_v2_rewatch"
 )
 METALENS_CORRECTION = (

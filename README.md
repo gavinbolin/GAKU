@@ -126,7 +126,7 @@ Add to your MCP client config (e.g. Claude Desktop's `claude_desktop_config.json
   "mcpServers": {
     "project-gaku": {
       "command": "node",
-      "args": ["C:\\Users\\gavin\\..PROJECT\\PROJECT GAKU\\podcast-pipeline\\packages\\mcp-server\\dist\\server.js"]
+      "args": ["C:\\Users\\gavin\\.PROJECT\\PROJECT GAKU\\podcast-pipeline\\packages\\mcp-server\\dist\\server.js"]
     }
   }
 }
