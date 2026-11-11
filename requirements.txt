@@ -1,8 +1,8 @@
-# Locked on Windows x64, Python 3.12.10. Recreate with .venv/Scripts/python.exe -m pip install -r requirements.txt
+# Locked on Windows x64, Python 3.12.10. PyAV <19 required by faster-whisper 1.2.1.
 annotated-doc==0.0.6
 annotated-types==0.8.0
 anyio==4.16.0
-av==19.0.2
+av==18.1.0
 beautifulsoup4==4.15.0
 brotli==1.2.1
 certifi==2026.10.23

@@ -40,3 +40,12 @@ ignored `output/takeover_logs/parent_before` and `python_parent_before`.
 No CHIE files, Desktop files, credentials, or other project roots are changed.
 Historical topic launchers are not run by this setup and may request generation;
 only execute them after verifying free-tier/budget and local-only flags.
+
+## Decoder compatibility regression
+
+The initial dependency install selected PyAV 19.0.2, whose `av.open()` removed
+`metadata_errors`; faster-whisper 1.2.1 still passes it. Imports and `pip check`
+passed but real transcription failed. The lock now uses **PyAV 18.1.0** (the
+last pre-19 release), verified with an actual decoded WAV and fresh preview ASR.
+Run `python tests/test_python_environment.py` after any dependency upgrade.
+Upstream: https://github.com/SYSTRAN/faster-whisper/issues/1589
