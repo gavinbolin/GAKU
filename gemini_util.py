@@ -15,15 +15,12 @@ import re
 import sys
 import time
 from typing import Any, Callable
+from pathlib import Path
 
-DEFAULT_FALLBACK_MODELS = [
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",       # suggested by the API's 404 for retired 2.5 models (2026-09-28)
-    "gemini-2.5-flash",
-    "gemini-3.5-flash-lite",  # suggested replacement for 2.5-flash-lite
-    "gemini-2.5-flash-lite",
-    "gemini-flash-latest",
-]
+DEFAULT_FALLBACK_MODELS = json.loads(
+    (Path(__file__).resolve().parent / "config" / "gemini_models.json").read_text(encoding="utf-8")
+)["fallback_models"]
+
 KEY_ENV_NAMES = ("GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY")
 MAX_RETRY_WAIT_S = 65.0
 

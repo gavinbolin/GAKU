@@ -36,14 +36,10 @@ export interface SynthesizeResult {
   warning?: string;
 }
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-const MODEL_FALLBACKS = [
-  MODEL,
-  "gemini-3.5-flash",
-  "gemini-2.5-flash",
-  "gemini-flash-latest",
-  "gemini-3-flash-preview",
-].filter((v, i, a) => v && a.indexOf(v) === i);
+import { geminiModels } from "../gemini_models.js";
+
+const MODEL_FALLBACKS = geminiModels(undefined);
+const MODEL = MODEL_FALLBACKS[0];
 const DEFAULT_DURATION_MIN = 8;
 const DEFAULT_VOICE_A = "af_bella";
 const DEFAULT_VOICE_B = "am_michael";

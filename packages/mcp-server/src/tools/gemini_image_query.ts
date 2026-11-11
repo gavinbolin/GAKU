@@ -24,14 +24,10 @@ export interface GeminiImageQueryResult {
   warning?: string;
 }
 
-const MODEL = process.env.GEMINI_IMAGE_QUERY_MODEL || process.env.GEMINI_MODEL || "gemini-3.6-flash";
-const MODEL_FALLBACKS = [
-  MODEL,
-  "gemini-3.5-flash",
-  "gemini-2.5-flash",
-  "gemini-flash-latest",
-  "gemini-3-flash-preview",
-].filter((v, i, a) => v && a.indexOf(v) === i);
+import { geminiModels } from "../gemini_models.js";
+
+const MODEL_FALLBACKS = geminiModels(process.env.GEMINI_IMAGE_QUERY_MODEL);
+const MODEL = MODEL_FALLBACKS[0];
 let stickyModel: string | null = null;
 
 const API_KEYS: string[] = [
