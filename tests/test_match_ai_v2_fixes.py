@@ -226,7 +226,7 @@ def test_qualified_stat_value_and_spoken_end():
     lines[4]["text"] = "Novartis cut trial design time by more than 30 percent in that program."
     ep = {
         "topic": "t",
-        "hosts": [{"id": "A", "voice_id": "am_adam"}, {"id": "B", "voice_id": "am_adam"}],
+        "hosts": [{"id": "A", "voice_id": "am_michael"}, {"id": "B", "voice_id": "am_michael"}],
         "segments": [
             {"segment_id": "s01", "title": "Open", "lines": _lines("s01", 2, filler)},
             {"segment_id": "s02", "title": "Novartis", "lines": lines, "overlays": [

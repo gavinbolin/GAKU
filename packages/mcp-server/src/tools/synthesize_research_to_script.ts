@@ -38,6 +38,7 @@ export interface SynthesizeResult {
 
 import { geminiModels } from "../gemini_models.js";
 import { stopOnGeminiBudgetError } from "../gemini_safety.js";
+import { enforceVoice } from "../kokoro/voicePolicy.js";
 
 const MODEL_FALLBACKS = geminiModels(undefined);
 const MODEL = MODEL_FALLBACKS[0];
@@ -287,6 +288,8 @@ function patchVoicesAndDuration(
   // example. Force the user-selected voices and duration so the audio step
   // doesn't fail with an unknown voice.
   episode.target_duration_minutes = duration;
+  voiceA = enforceVoice(voiceA, "script host A");
+  voiceB = enforceVoice(voiceB, "script host B");
   const hosts = (episode.hosts as Array<Record<string, unknown>> | undefined) ?? [];
   if (hosts.length >= 1 && hosts[0]) {
     hosts[0].voice_id = voiceA;
@@ -739,8 +742,8 @@ export async function synthesizeResearchToScript(
   args: SynthesizeArgs
 ): Promise<SynthesizeResult> {
   const duration = args.target_duration_minutes ?? DEFAULT_DURATION_MIN;
-  const voiceA = args.voice_a ?? DEFAULT_VOICE_A;
-  const voiceB = args.voice_b ?? DEFAULT_VOICE_B;
+  const voiceA = enforceVoice(args.voice_a ?? DEFAULT_VOICE_A, "voice_a");
+  const voiceB = enforceVoice(args.voice_b ?? DEFAULT_VOICE_B, "voice_b");
   const tone = (args.tone || "").trim() || DEFAULT_TONE;
   const audience = (args.audience_level || "").trim() || DEFAULT_AUDIENCE;
   const focus = (args.focus || "").trim();

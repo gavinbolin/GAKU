@@ -5,6 +5,8 @@
 //   const client = new KokoroClient();
 //   const wav = await client.synthesize("Hello world", VOICE_HOST_A);
 
+import { enforceVoice, filterVoices } from "./voicePolicy.js";
+
 const DEFAULT_BASE_URL = process.env.KOKORO_URL ?? "http://localhost:8880";
 
 // Two host voices used across episodes. Override per-episode in episode.hosts[].voice_id.
@@ -34,6 +36,7 @@ export class KokoroClient {
   }
 
   async synthesize(text: string, voiceId: string): Promise<Buffer> {
+    voiceId = enforceVoice(voiceId, "kokoro synth");
     const url = `${this.baseUrl}/v1/audio/speech`;
     const res = await fetch(url, {
       method: "POST",
@@ -62,6 +65,6 @@ export class KokoroClient {
     const res = await fetch(`${this.baseUrl}/v1/audio/voices`);
     if (!res.ok) throw new Error(`Kokoro listVoices failed: ${res.status}`);
     const json = (await res.json()) as { voices?: string[] };
-    return json.voices ?? [];
+    return filterVoices(json.voices ?? []);
   }
 }

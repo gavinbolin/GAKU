@@ -1,0 +1,10 @@
+{
+  "_comment": "Kokoro voices that must never narrate. Matched case-insensitively against each voice id and each component of a blend (e.g. 'am_adam+af_bella', 'am_adam(0.6)'). Enforced by voice_policy.py (Python) and packages/mcp-server/src/kokoro/voicePolicy.ts (every Kokoro synth call).",
+  "kokoro": {
+    "blocked": ["am_adam"],
+    "blocked_name_substrings": ["adam"],
+    "substitutes": { "am_adam": "am_michael" },
+    "fallback_by_prefix": { "am": "am_michael", "bm": "bm_george", "af": "af_bella", "bf": "bf_emma" },
+    "fallback": "am_michael"
+  }
+}

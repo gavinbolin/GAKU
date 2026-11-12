@@ -39,8 +39,11 @@ from typing import Any
 
 # Kokoro voice pool grouped by gender. Used by _pick_voices() when the user
 # doesn't pin --voice-a / --voice-b. Names match kokoro-fastapi's voice ids.
-MALE_VOICES = ["bm_george", "bm_lewis", "am_michael", "am_adam"]
-FEMALE_VOICES = ["bf_emma", "bf_v0isabella", "af_bella", "af_sarah"]
+# Blocklisted voices (config/voice_blocklist.json, e.g. Adam) are filtered out.
+from voice_policy import enforce_episode_hosts, enforce_voice, filter_voices  # noqa: E402
+
+MALE_VOICES = filter_voices(["bm_george", "bm_lewis", "am_michael"])
+FEMALE_VOICES = filter_voices(["bf_emma", "bf_v0isabella", "af_bella", "af_sarah"])
 # Probability that a random pairing is mixed-gender (male + female) vs.
 # same-gender. Mixed sounds more like a typical co-hosted podcast.
 MIXED_GENDER_PROBABILITY = 0.75
@@ -331,6 +334,12 @@ def main() -> int:
     elif args.voice_b is None:
         pool = [v for v in (MALE_VOICES + FEMALE_VOICES) if v != args.voice_a]
         args.voice_b = random.choice(pool)
+    args.voice_a = enforce_voice(args.voice_a, context="--voice-a")
+    args.voice_b = enforce_voice(args.voice_b, context="--voice-b")
+    if args.voice_a == args.voice_b:  # a swap can collide with the other host
+        same = MALE_VOICES if str(args.voice_b)[1:2] == "m" else FEMALE_VOICES
+        args.voice_b = random.choice([v for v in same if v != args.voice_a]
+                                     or [v for v in (MALE_VOICES + FEMALE_VOICES) if v != args.voice_a])
     print(f"[voices] Primary: {args.voice_a} | Secondary: {args.voice_b}", file=sys.stderr)
 
     # --episode-in skips research + Gemini. The run dir is the parent of the
@@ -461,6 +470,7 @@ def main() -> int:
         # Keep host display names in sync with the Kokoro voice_ids that were
         # actually picked (voice_persona), not Gemini's placeholder Alex/Sam.
         try:
+            enforce_episode_hosts(episode, context="episode.json")
             from visual_queue import voice_persona as _voice_persona
             for h in episode.get("hosts") or []:
                 vid = (h.get("voice_id") or "").strip()

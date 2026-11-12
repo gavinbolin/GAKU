@@ -90,6 +90,13 @@ docker run -d --name kokoro --gpus all -p 8880:8880 ghcr.io/remsky/kokoro-fastap
 Sanity check: `curl http://localhost:8880/v1/audio/voices` should list voices
 including `af_bella` and `am_michael` (the defaults baked into `kokoroClient.ts`).
 
+**Voice blocklist.** `config/voice_blocklist.json` lists Kokoro voices that must never
+narrate (currently `am_adam` and any `adam` variant or blend). They are removed from
+the random host pools and the Gradio dropdowns, and an explicit request (CLI flag,
+old `episode.json`, Gemini output, audiobook `--voice`) is swapped for a same
+gender/accent voice (`am_adam` -> `am_michael`) with a `[voices] WARNING`. Enforced
+in `voice_policy.py` and, for every synth call, `packages/mcp-server/src/kokoro/voicePolicy.ts`.
+
 Override the URL with `KOKORO_URL=http://other-host:8880` if you run it elsewhere.
 
 `research_podcast.py` stops the Docker container named `kokoro` when a build
