@@ -1,66 +1,71 @@
-﻿# Hybrid YouTube thumbnails (PROJECT GAKU)
+# YouTube thumbnails (PROJECT GAKU, v3)
 
-## Goal
+Generator: `podcast-pipeline/thumbnail_hybrid.py` (Pillow + FFmpeg, local only, no API
+calls). Used by `youtube_upload.upload_video` via `resolve_thumbnail_path`, which still
+prefers a hand-picked `output/podcasts/<episode>/thumbnail.png` when present.
 
-Punchy one-hook thumbs that read at phone scale: cinematic dark plate + ONE big
-Impact-style hook (about 2–4 words), high contrast. No small labels or corner badges
-by default (series badges stay optional and off).
+## What was wrong (v2)
 
-Style reference: audit **v2-A** ("MOST FAIL") for Most AI Initiatives Fail.
+- The "hook" fell back to the first 4 non-stopwords of the full title, so subtitles and
+  odd fragments ("3D MODEL ANIMATION WORKS", "MATCH YOUR AI STRATEGY" with "HOW" or
+  "THE" silently dropped) ended up on the image.
+- One single line, shrunk until it fit the width: long titles became tiny and thin;
+  there was no wrapping and no line limit.
+- Text was dead-centre, so it could sit under YouTube's bottom-right duration badge on
+  some sizes, and every thumbnail used the same empty starfield.
 
-## Canonical override
+## Headline (separate from the YouTube title)
 
-Place a hand-picked PNG at:
+First hit wins: `hook=` argument, `episode.thumbnail_text`, legacy `thumbnail_hook`,
+env `GAKU_THUMBNAIL_TEXT` / `GAKU_THUMBNAIL_HOOK`, then a deterministic heuristic:
+cut the subtitle after `:` / em dash / `|` / `(` / sentence break, drop filler words,
+cut long titles at the first connector ("to", "for", "in", ...) and cap at 5 whole
+words. Mark the accent word with `*asterisks*` (default: last content word):
 
+```json
+"thumbnail_text": "How 3D Animation *Works*"
 ```
-output/podcasts/<episode_folder>/thumbnail.png
-```
 
-Upload helpers prefer this file and skip generation. This is the hybrid override path.
+New episodes: the Gemini outline call now also asks for `thumbnail_text` (same call,
+no extra request); `cleanThumbnailText` keeps it only when it is 1-6 words.
 
-## Auto path (partial)
+## Fitting
 
-`podcast-pipeline/thumbnail_hybrid.py`:
+`fit_text` measures each candidate with Pillow (including the stroke), tries every
+word-boundary split onto 1-3 lines, and takes the largest font size that fits the
+layout's safe box, preferring balanced lines. It never cuts or drops words; a single
+giant word just gets smaller. All layout boxes avoid `TIMESTAMP_ZONE`
+(bottom-right 260x96). Heavy Impact type, thick dark stroke, soft drop shadow,
+accent colour on the key word.
 
-1. Load plate from `visuals/visual_001_open_title.mp4` at t=0.0 (clean starfield
-   before title bake-in), else `podcast.mp4` t=0, else audit frame fallbacks.
-2. Darken / contrast / vignette for white type punch.
-3. Draw a single centered hook line (Impact / Arial Black-style).
-4. Save ≤2 MB PNG suitable for `thumbnails().set`.
+## Background
 
-Hook text resolution:
+Best moment among B-roll beats in the rendered segment clips that have no card,
+diagram or code overlay at that time (pre-code `code_examples/baseline` clips are
+preferred), scored for sharpness, colour, brightness and low white-text area, plus
+a bonus when the B-roll query overlaps the topic/segment titles. The caption strip
+and chapter label are cropped away. Override with `thumbnail_bg.png|jpg` in the
+episode folder. Fallback: open-title starfield. 3D/animation topics (or
+`"thumbnail_motif": "rig"`) also get a drawn wireframe armature accent.
 
-1. `episode["thumbnail_hook"]` (preferred)
-2. `GAKU_THUMBNAIL_HOOK` env
-3. Weak fallback: first 2–4 content words from `topic` (not punchy)
+## Layouts
 
-## Upload wiring
+| layout | look |
+|--------|------|
+| `bold` (default) | left text over a dark gradient, image + accent on the right |
+| `bigword` | small kicker line + one giant accent word |
+| `split` | brand panel with text, image on the right behind a diagonal accent edge |
 
-After `videos().insert`, `youtube_upload.upload_video(..., episode_dir=..., episode=...)`
-calls `thumbnail_hybrid.resolve_thumbnail_path` then `thumbnails().set`.
+Pick with `layout=` or `GAKU_THUMBNAIL_LAYOUT`. Output: 1280x720 PNG under 2 MB
+(JPEG if the path ends in `.jpg`).
 
-Also used by `build_video._try_youtube_upload` and `research_podcast` upload.
-
-Manual set for an existing video:
+## Review samples (no upload)
 
 ```powershell
-$root = 'C:\Users\gavin\.PROJECT\PROJECT GAKU'
-$env:PYTHONPATH = $root
-Set-Location -LiteralPath $root
-& "$root\podcast-pipeline\.venv\Scripts\python.exe" -c @"
-import youtube_upload as yt
-from pathlib import Path
-import thumbnail_hybrid as th
-yt_svc = yt.get_authenticated_service()
-png = Path(r'$root\output\podcasts\<ep>\thumbnail.png')
-print(th.set_thumbnail_on_youtube(yt_svc, 'VIDEO_ID', png))
-"@
+& .\.venv\Scripts\python.exe tools\render_thumbnail_samples.py --episode-dir "<run>" [--headline "How 3D Animation *Works*"]
 ```
 
-## Remaining gaps (full auto hook text)
-
-- No LLM / Gemini pass yet to invent a 2–4 word CTR hook from the episode script.
-- Topic-word fallback is functional but often dull ("MOST AI INITIATIVES").
-- No A/B variant generation in-pipeline (audit scripts in Temp were one-off).
-- Series corner badge still documented only — intentionally not auto-applied so it
-  cannot fight the one-hook design.
+Writes `<run>/reviews/thumbnails/` with each layout, 320x180 previews, the old
+thumbnail for comparison, a contact sheet and `samples.json`. It never overwrites
+`thumbnail.png` and never calls YouTube. Setting a thumbnail on an existing video is
+a separate, explicitly approved step (`set_thumbnail_on_youtube`).
