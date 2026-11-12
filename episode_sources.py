@@ -116,7 +116,7 @@ def _tokens(text: str) -> set[str]:
 def mark_relevance(sources: list[dict[str, Any]], episode: dict[str, Any] | None) -> list[dict[str, Any]]:
     want = _episode_tokens(episode)
     for s in sources:
-        if s.get("kind") == "document" or "relevant" in s and s.get("origin") == "episode":
+        if s.get("kind") == "document" or ("relevant" in s and s.get("origin") in ("episode", "research")):
             s.setdefault("relevant", True)
             continue
         overlap = sorted(_tokens(f"{s.get('title', '')} {s.get('snippet', '')}") & want)
@@ -161,6 +161,13 @@ def capture_sources(run_dir: Path | str | None, episode: dict[str, Any] | None =
                 found += [s for s in (data.get("sources") if isinstance(data, dict) else data) or []
                           if isinstance(s, dict)]
             except (OSError, ValueError):
+                pass
+        rj = rd / "research_sources.json"  # research_search.py: already relevance-filtered
+        if rj.is_file():
+            try:
+                found += [{**s, "origin": "research"} for s in json.loads(rj.read_text(encoding="utf-8"))
+                          .get("sources") or [] if isinstance(s, dict)]
+            except (OSError, ValueError, AttributeError):
                 pass
         for doc in [rd / "hbr_source.md", *sorted((rd / "_source_pdfs").glob("*.md"))]:
             if doc.is_file() and (d := parse_document_source(doc)):
@@ -220,6 +227,12 @@ def require_sources(sources: list[dict[str, Any]], *, allow_missing: bool = Fals
 
 def has_sources_section(description: str) -> bool:
     return bool(re.search(r"(?m)^Sources:\s*$", description or ""))
+
+
+def description_cites_sources(description: str) -> bool:
+    """A 'Sources:' block, or a hand-written 'Source: <citation>' line (older publish scripts)."""
+    return has_sources_section(description) or bool(
+        re.search(r"(?m)^Sources?:\s*\S.{10,}", description or ""))
 
 
 def append_sources(description: str, sources: list[dict[str, Any]], *,

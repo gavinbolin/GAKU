@@ -108,7 +108,28 @@ def make_run_dir(out_parent: Path, topic: str) -> Path:
 
 
 def run_gaku(topic: str) -> Path:
-    """Spawn gaku.py for the topic; return the path to results.md it produced."""
+    """Research the topic; return the results.md that becomes Gemini's RESEARCH_NOTES.
+
+    Uses research_search.py (free Wikipedia + ddgs metasearch, relevance-filtered,
+    also writes research_sources.json beside results.md). Falls back to the legacy
+    gaku.py scrape only if that fails outright.
+    """
+    try:
+        import research_search as rs
+        result = rs.research(topic)
+        md, _ = rs.write_outputs(result, DEFAULT_RESULTS)
+        n = len(result["sources"])
+        print(f"[research] {n} on-topic sources ({len(result['dropped'])} dropped) -> {md}", file=sys.stderr)
+        if n < 3:
+            print("[research] WARNING: fewer than 3 on-topic sources; upload will be refused if none remain.",
+                  file=sys.stderr)
+        if n:
+            return md
+    except Exception as exc:  # network / ddgs failure -> legacy path
+        print(f"[research] research_search failed ({exc!r}); falling back to gaku.py", file=sys.stderr)
+    stale = DEFAULT_RESULTS.with_name("research_sources.json")
+    if stale.exists():
+        stale.unlink()  # never pair a legacy scrape with another topic's sources
     print(f"[podcast] running gaku.py for topic: {topic!r}", file=sys.stderr)
     proc = subprocess.run(
         [sys.executable, str(GAKU_SCRIPT), "--topic", topic],
@@ -385,6 +406,14 @@ def main() -> int:
         # gets overwritten by the next gaku.py invocation).
         try:
             shutil.copyfile(research_path, out_dir / "results.md")
+            rsj = research_path.with_name("research_sources.json")
+            if rsj.is_file():
+                try:
+                    same_topic = json.loads(rsj.read_text(encoding="utf-8")).get("topic") == args.topic
+                except ValueError:
+                    same_topic = False
+                if same_topic:  # never attach another topic's sources
+                    shutil.copyfile(rsj, out_dir / "research_sources.json")
         except OSError as exc:
             print(f"[podcast] warning: failed to copy results.md: {exc}", file=sys.stderr)
         if source_pdf_md is not None:
