@@ -1,5 +1,6 @@
 """Offline thumbnail text tests: headline heuristic, word-safe fitting, safe areas."""
 from pathlib import Path
+import os
 import sys
 import tempfile
 import unittest
@@ -103,6 +104,21 @@ class LayoutTests(unittest.TestCase):
             self.assertLess(path.stat().st_size, th.MAX_PNG_BYTES)
             with Image.open(path) as saved:
                 self.assertEqual(saved.size, (1280, 720))
+
+
+class DefaultLayoutTests(unittest.TestCase):
+    def test_bold_is_the_pipeline_default(self):
+        self.assertEqual(th.DEFAULT_LAYOUT, "bold")
+        old = os.environ.pop("GAKU_THUMBNAIL_LAYOUT", None)
+        try:
+            bg = Image.new("RGB", (1280, 720), (40, 40, 60))
+            with tempfile.TemporaryDirectory() as tmp:
+                _, info = th.render_thumbnail(tmp, episode={"topic": "How 3D Model Animation Works"},
+                                              background=(bg, {"kind": "test"}))
+            self.assertEqual(info["layout"], "bold")
+        finally:
+            if old is not None:
+                os.environ["GAKU_THUMBNAIL_LAYOUT"] = old
 
 
 if __name__ == "__main__":
