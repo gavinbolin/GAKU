@@ -307,6 +307,7 @@ signal to lengthen `duration_ms` or pick a closer anchor line.
 {
   "episode_id": "kebab-case-slug",
   "topic": "Human-readable topic",
+  "thumbnail_text": "How 3D Animation *Works*",
   "target_duration_minutes": 8,
   "hosts": [
     { "id": "A", "name": "Alex", "voice_id": "af_bella" },
@@ -346,6 +347,9 @@ signal to lengthen `duration_ms` or pick a closer anchor line.
 Rules the validator will enforce — get these right or the run fails:
 
 - `episode_id` is lowercase, kebab-case.
+- `thumbnail_text` (optional but preferred) is a 2-5 word thumbnail headline, not
+  the full title: no subtitle, no trailing "to/for/of", readable on its own. Wrap
+  exactly one key word in `*asterisks*` for the accent colour.
 - Exactly **two** hosts, ids `"A"` and `"B"`.
 - Every `line_id` is unique across the whole episode.
 - Every `start_with_line` matches an actual `line_id`.

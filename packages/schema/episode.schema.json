@@ -63,6 +63,16 @@
       "type": "string",
       "description": "Optional 2-4 word YouTube thumbnail hook (Impact-style). When set, hybrid thumb gen uses this instead of topic-word fallback. Episode-folder thumbnail.png still overrides the generated image.",
       "maxLength": 48
+    },
+    "thumbnail_text": {
+      "type": "string",
+      "description": "Optional 2-5 word thumbnail headline, separate from the YouTube title (e.g. 'How 3D Animation *Works*'). Wrap the single key word in *asterisks* for the accent colour. Preferred over thumbnail_hook.",
+      "maxLength": 60
+    },
+    "thumbnail_motif": {
+      "type": "string",
+      "enum": ["rig", "none"],
+      "description": "Optional local thumbnail accent graphic. 'rig' draws a wireframe armature; omitted = auto (3D/animation topics)."
     }
   },
   "definitions": {

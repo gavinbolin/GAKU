@@ -370,6 +370,7 @@ interface OutlineSegment {
 interface OutlineResponse {
   episode_id?: string;
   topic?: string;
+  thumbnail_text?: string;
   segments?: OutlineSegment[];
 }
 
@@ -385,6 +386,7 @@ function outlinePrompt(): string {
     "{",
     '  "episode_id": "kebab-case-slug",',
     '  "topic": "Human-readable topic",',
+    '  "thumbnail_text": "2-5 punchy words with the key word in *asterisks*",',
     '  "segments": [',
     '    { "segment_id": "s01_hook",  "title": "...", "kind": "hook",  "intent": "...", "target_lines": 6 },',
     '    { "segment_id": "s02_beat1", "title": "...", "kind": "beat",  "intent": "...", "target_lines": 16 },',
@@ -396,6 +398,9 @@ function outlinePrompt(): string {
     "",
     "Rules:",
     "- Exactly one `hook`, one `recap`, one `close`. Everything else is `beat`.",
+    "- `thumbnail_text` is a SHORT thumbnail headline (2-5 words, never the full title,",
+    "  no subtitle, no trailing connector words) that makes sense on its own, e.g.",
+    "  \"How 3D Animation *Works*\". Mark exactly one key word with *asterisks*.",
     "- `segment_id` is lowercase kebab with a zero-padded prefix (s01, s02, …).",
     "- Scale total dialogue to TARGET_DURATION_MINUTES * 165 words combined.",
     "  Estimate ~25 words per line, so total `target_lines` across all segments",
@@ -697,6 +702,7 @@ async function generateChunked(
   const episode: Record<string, unknown> = {
     episode_id: outline.episode_id || slugify(args.topic),
     topic: outline.topic || args.topic,
+    ...(cleanThumbnailText(outline.thumbnail_text) ? { thumbnail_text: cleanThumbnailText(outline.thumbnail_text) } : {}),
     target_duration_minutes: duration,
     hosts: [
       { id: "A", name: hostA.name, voice_id: voiceA },
@@ -706,6 +712,15 @@ async function generateChunked(
   };
   log(`chunked generation complete: ${filledSegments.length} segments stitched`);
   return { episode, raw: allRaw };
+}
+
+/** Keep a model-suggested thumbnail headline only when it is short whole-word text. */
+export function cleanThumbnailText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/\s+/g, " ").trim();
+  const words = text.split(" ").filter(Boolean);
+  if (words.length < 1 || words.length > 6 || text.length > 60) return undefined;
+  return text;
 }
 
 function slugify(s: string): string {
