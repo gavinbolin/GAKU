@@ -28,6 +28,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 YOUTUBE_DESCRIPTION_LIMIT = 5000
 SOURCES_HEADER = "Sources:"
+MIN_SHARED_TERMS = 2
 _MD_LINK = re.compile(r"\[((?:[^\[\]\n]|\[[^\]\n]*\]){2,300})\]\((https?://[^\s)]+)\)")
 _SNIPPET = re.compile(r"^\s{2,}-\s+(.+)$")
 _URL = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -119,7 +120,8 @@ def mark_relevance(sources: list[dict[str, Any]], episode: dict[str, Any] | None
             s.setdefault("relevant", True)
             continue
         overlap = sorted(_tokens(f"{s.get('title', '')} {s.get('snippet', '')}") & want)
-        s["relevant"] = bool(overlap) if want else True
+        # One shared word ("code", "ai") is too weak; real on-topic hits share several.
+        s["relevant"] = len(overlap) >= MIN_SHARED_TERMS if want else True
         s["matched_terms"] = overlap[:8]
     return sources
 

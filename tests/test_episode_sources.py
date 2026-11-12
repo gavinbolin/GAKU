@@ -106,6 +106,12 @@ class RefusalTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GAKU_ALLOW_NO_SOURCES": "1"}):
                 es.build_description("Body", _run_dir(tmp, None), EPISODE)
 
+    def test_single_generic_word_match_is_not_on_topic(self):
+        md = "- **[Best Free Coding Websites](https://scrimba.com/x)** - _Article_\n  - learning to code\n"
+        ep = {"topic": "3D animation", "segments": [{"title": "The Illusion of Life in Code"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(es.listed_sources(es.capture_sources(_run_dir(tmp, md), ep)), [])
+
     def test_only_offtopic_sources_still_refuses(self):
         md = "- **[Clio](https://app.clio.com/)** - _Article_\n  - Clio\n"
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"GAKU_ALLOW_NO_SOURCES": ""}):
