@@ -274,6 +274,11 @@ def main() -> int:
         help="YouTube privacy when uploading (default: private). Use public only when explicitly authorized.",
     )
     parser.add_argument(
+        "--allow-no-sources",
+        action="store_true",
+        help="Upload even when no sources were captured (default: refuse; every GAKU upload lists its sources).",
+    )
+    parser.add_argument(
         "--yt-title",
         default=None,
         help="Optional YouTube title override (max 100 chars).",
@@ -469,6 +474,22 @@ def main() -> int:
 
         # Keep host display names in sync with the Kokoro voice_ids that were
         # actually picked (voice_persona), not Gemini's placeholder Alex/Sam.
+        # Record where the information came from (real research artifacts only).
+        try:
+            import episode_sources as _es
+            _extra = [d for d in [_es.parse_document_source(source_pdf_md)] if d] if source_pdf_md else []
+            _captured = _es.capture_sources(out_dir, episode, research_text=research_notes or None, extra=_extra)
+            _es.write_sources_json(out_dir, _captured)
+            episode["sources"] = [{k: s[k] for k in ("title", "url", "kind", "origin") if s.get(k) is not None}
+                                  for s in _es.listed_sources(_captured)]
+            print(f"[sources] captured {len(_captured)} ({len(episode['sources'])} on-topic) -> sources.json",
+                  file=sys.stderr)
+            if not episode["sources"]:
+                print("[sources] WARNING: no on-topic sources captured; YouTube upload will be refused "
+                      "unless --allow-no-sources is passed.", file=sys.stderr)
+        except Exception as exc:
+            print(f"[sources] warning: could not capture sources: {exc}", file=sys.stderr)
+
         try:
             enforce_episode_hosts(episode, context="episode.json")
             from visual_queue import voice_persona as _voice_persona
@@ -673,6 +694,7 @@ def main() -> int:
                     privacy_status=args.upload_privacy,
                     title_override=args.yt_title,
                     series=series_key,
+                    allow_no_sources=args.allow_no_sources,
                 )
 
             final_audio_path = final_mp3 if mp3_ok else final_wav
@@ -926,6 +948,7 @@ def _try_youtube_upload(
     privacy_status: str = "private",
     title_override: str | None = None,
     series: str | None = None,
+    allow_no_sources: bool = False,
 ) -> None:
     """Upload the rendered podcast.mp4 to YouTube. Skips gracefully if
     credentials aren't present; logs and swallows errors so a failed upload
@@ -961,6 +984,8 @@ def _try_youtube_upload(
             f"This video was auto-generated using AI research, scripting, and text-to-speech synthesis.\n\n"
             f"This episode uses AI-generated voices and visuals (PROJECT GAKU)."
         )
+        import episode_sources as es
+        description, _ = es.build_description(description, run_dir, episode, allow_no_sources=allow_no_sources)
         tags = episode.get("keywords", []) or ["podcast", "education", "ai", "langchain"]
         title = (title_override or topic)[:100]
         series_key = (series or episode.get("series") or None)
@@ -975,12 +1000,17 @@ def _try_youtube_upload(
             series=series_key,
             episode_dir=str(run_dir) if run_dir else None,
             episode=episode,
+            allow_no_sources=allow_no_sources,
         )
         out = {**result, "uploaded_at": datetime.datetime.utcnow().isoformat()}
         if series_key:
             out.setdefault("series", series_key)
         (run_dir / "youtube.json").write_text(json.dumps(out, indent=2))
     except Exception as e:
+        if type(e).__name__ == "MissingSourcesError":
+            print(f"[youtube] REFUSED: {e}", file=sys.stderr)
+            print(f"[youtube] video is still saved locally at: {mp4_path}", file=sys.stderr)
+            raise
         print(f"[youtube] upload failed: {e}")
         print(f"[youtube] video is still saved locally at: {mp4_path}")
     finally:

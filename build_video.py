@@ -50,7 +50,7 @@ def _try_youtube_upload(
     episode: dict | None = None,
     run_dir: Path | None = None,
 ) -> None:
-    """Private YouTube upload after compose. Never raises."""
+    """Private YouTube upload after compose. Only raises MissingSourcesError (no sources)."""
     repo_root = HERE.parent
     if not (repo_root / "youtube_client_secrets.json").exists():
         print("[youtube] skipping — youtube_client_secrets.json not found", file=sys.stderr)
@@ -73,6 +73,9 @@ def _try_youtube_upload(
             "This video was auto-generated using AI research, scripting, and text-to-speech synthesis.\n\n"
             "This episode uses AI-generated voices and visuals (PROJECT GAKU)."
         )
+        import episode_sources as es
+        src_dir = run_dir if run_dir is not None and (Path(run_dir) / "episode.json").exists() else mp4_path.parent
+        description, _ = es.build_description(description, src_dir, episode)  # GAKU_ALLOW_NO_SOURCES=1 overrides
         tags = (episode or {}).get("keywords") or ["podcast", "education", "gaku"]
         privacy = os.environ.get("GAKU_YT_PRIVACY", "private")
         # Prefer episode folder for thumbnail.png override / hybrid gen.
@@ -96,6 +99,10 @@ def _try_youtube_upload(
         (dest / "youtube.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
         print(f"[youtube] {result.get('url')} ({privacy})", file=sys.stderr)
     except Exception as exc:
+        if type(exc).__name__ == "MissingSourcesError":
+            print(f"[youtube] REFUSED: {exc}", file=sys.stderr)
+            print(f"[youtube] video is still saved locally at: {mp4_path}", file=sys.stderr)
+            raise
         print(f"[youtube] upload failed: {exc}", file=sys.stderr)
         print(f"[youtube] video is still saved locally at: {mp4_path}", file=sys.stderr)
     finally:

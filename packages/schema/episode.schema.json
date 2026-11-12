@@ -73,6 +73,20 @@
       "type": "string",
       "enum": ["rig", "none"],
       "description": "Optional local thumbnail accent graphic. 'rig' draws a wireframe armature; omitted = auto (3D/animation topics)."
+    },
+    "sources": {
+      "type": "array",
+      "description": "Where the episode's information came from, captured from research artifacts (never invented). Listed in the YouTube description. Full capture incl. off-topic results lives in <run>/sources.json.",
+      "items": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "url": { "type": ["string", "null"] },
+          "kind": { "type": "string" },
+          "origin": { "type": "string" }
+        }
+      }
     }
   },
   "definitions": {
