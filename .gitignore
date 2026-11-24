@@ -31,3 +31,25 @@ clip_durations.json
 .DS_Store
 Thumbs.db
 *.log
+
+# Added before going public
+!.env.example
+*.pem
+*.pfx
+*secret*
+*token*.json
+*token*.json.*
+*credential*
+*cookie*
+*password*
+.grok-run/
+User Data/
+chrome-profile*/
+*.docx
+*.zip
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.sqlite
+*.db
